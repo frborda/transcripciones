@@ -1,0 +1,12 @@
+{
+  "_comentario": "Modelo y nivel de razonamiento (effort) de Claude por componente. Cambialo acá; no hace falta tocar el código. Cada clave corresponde a un componente que lanza sesiones de Claude; 'default' se usa como base y cada clave la sobrescribe. Se puede pisar en runtime con las variables de entorno CLAUDE_MODEL / CLAUDE_EFFORT. Tras cambiarlo, reiniciar el watcher.",
+  "_valores_effort": ["low", "medium", "high", "xhigh", "max"],
+  "default": {
+    "model": "claude-opus-4-8",
+    "effort": "xhigh"
+  },
+  "tg_watcher": {
+    "model": "claude-opus-4-8",
+    "effort": "xhigh"
+  }
+}

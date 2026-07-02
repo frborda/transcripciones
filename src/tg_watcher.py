@@ -69,13 +69,26 @@ async def enviar_msg(chat, texto):
 
 # ---------- sesiones headless de Claude ----------
 
-# modelo para TODO el análisis/interpretación de la transcripción: pasadas 1/2,
-# hablantes, redacción y PDFs. Configurable con CLAUDE_MODEL; por defecto Opus 4.8
-# (NADA de Claude 5).
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-4-8")
-# nivel de razonamiento de esas sesiones headless. Configurable con CLAUDE_EFFORT;
-# por defecto xhigh (máxima calidad de análisis).
-CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", "xhigh")
+# modelo y effort de Claude para TODO el análisis de la transcripción (pasadas 1/2,
+# hablantes, redacción y PDFs). NO se hardcodean: se leen de claude_models.json (raíz);
+# se pueden pisar en runtime con CLAUDE_MODEL / CLAUDE_EFFORT. El fallback embebido es
+# solo una red de seguridad si faltara el archivo.
+def _claude_defaults(clave, fb_model="claude-opus-4-8", fb_effort="xhigh"):
+    model, effort = fb_model, fb_effort
+    try:
+        cfg = json.loads((ROOT / "claude_models.json").read_text(encoding="utf-8"))
+        entrada = {**cfg.get("default", {}), **cfg.get(clave, {})}
+        model = entrada.get("model", model)
+        effort = entrada.get("effort", effort)
+    except Exception as e:
+        print(f"[watcher] no pude leer claude_models.json ({e}); uso fallback "
+              f"{fb_model}/{fb_effort}", flush=True)
+    return model, effort
+
+
+_CL_MODEL, _CL_EFFORT = _claude_defaults("tg_watcher")
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", _CL_MODEL)
+CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", _CL_EFFORT)
 
 REGLAS_ONESHOT = (
     "Usá siempre el python del venv (ruta completa). "

@@ -27,6 +27,7 @@ transcripciones/
 │   ├── grabador/     #   escritorio (Go, Windows)
 │   └── apk/          #   Android
 ├── .github/workflows # CI que publica los binarios como Releases
+├── claude_models.json # modelo/effort de Claude por componente (editable, sin tocar código)
 ├── requirements.txt
 ├── README.md
 ├── .tg_config.json   # credenciales de Telegram (no se versiona; ver .example)
@@ -188,8 +189,10 @@ Los scripts de Python están en `src/`; los de PowerShell (puntos de entrada), e
   exit code.
 - **No se re-ejecutan** pasos pesados si su salida ya existe (salvo `-Force`).
 - Modelo por defecto `large-v3`. Para pruebas rápidas: `--modelo tiny`.
-- El watcher lanza Claude con **Opus 4.8** y effort **xhigh** por defecto; se puede
-  cambiar con las variables de entorno `CLAUDE_MODEL` y `CLAUDE_EFFORT`.
+- El **modelo y el effort de Claude** que usa el watcher se definen en
+  **`claude_models.json`** (por defecto Opus 4.8 / `xhigh`), para no hardcodearlos en
+  el código. Se pueden pisar en runtime con las variables de entorno `CLAUDE_MODEL` y
+  `CLAUDE_EFFORT`. Tras cambiarlo, reiniciar el watcher.
 
 ## 8. Clientes de grabación (opcionales)
 
