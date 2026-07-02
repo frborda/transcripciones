@@ -22,24 +22,24 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: grabador/go.mod
+          go-version-file: clients/grabador/go.mod
 
       - name: Compilar (cross-compile a Windows amd64)
-        working-directory: grabador
+        working-directory: clients/grabador
         run: GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o GrabadorReuniones.exe .
 
       - name: Publicar en la Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: grabador/GrabadorReuniones.exe
+          files: clients/grabador/GrabadorReuniones.exe
 
       - name: Subir artefacto (runs manuales)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
         with:
           name: GrabadorReuniones-exe
-          path: grabador/GrabadorReuniones.exe
+          path: clients/grabador/GrabadorReuniones.exe
 
   apk-android:
     name: App Android (.apk)
@@ -53,13 +53,13 @@ jobs:
           java-version: '17'
 
       - name: Compilar APK (debug, instalable)
-        working-directory: apk
+        working-directory: clients/apk
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon assembleDebug
 
       - name: Renombrar APK
-        run: cp apk/app/build/outputs/apk/debug/app-debug.apk GrabadorReuniones.apk
+        run: cp clients/apk/app/build/outputs/apk/debug/app-debug.apk GrabadorReuniones.apk
 
       - name: Publicar en la Release
         if: startsWith(github.ref, 'refs/tags/')

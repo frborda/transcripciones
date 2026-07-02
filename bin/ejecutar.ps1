@@ -55,7 +55,9 @@ param(
 # Continue (no Stop): en PS 5.1 los warnings que Python/ffmpeg mandan a stderr
 # se convertirían en error terminante con Stop. Validamos por archivo de salida.
 $ErrorActionPreference = "Continue"
-Set-Location -Path $PSScriptRoot
+$root = Split-Path -Parent $PSScriptRoot
+$src  = Join-Path $root "src"
+Set-Location -Path $root
 
 # Resolver el python del venv (evita el alias de Microsoft Store que rompe imports)
 $python =
@@ -109,7 +111,7 @@ function Paso {
 
 # --- 1. Transcribir ---
 Paso "[1/5] Transcribiendo $base" $srt {
-    & $python transcribir.py $audioFull --modelo $Modelo --device $Device
+    & $python (Join-Path $src "transcribir.py") $audioFull --modelo $Modelo --device $Device
 }
 
 if ($Hasta -eq "transcribir") {
@@ -126,12 +128,12 @@ Paso "[2/5] Convirtiendo a WAV mono 16k (ffmpeg)" $wav {
 
 # --- 3. Diarizar ---
 Paso "[3/5] Diarizando (quién habla)" $turnos {
-    & $python diarizar.py $wav --device $Device
+    & $python (Join-Path $src "diarizar.py") $wav --device $Device
 }
 
 # --- 4. Fusionar ---
 Paso "[4/5] Fusionando transcripción + turnos" $habTxt {
-    & $python fusionar.py $srt $turnos
+    & $python (Join-Path $src "fusionar.py") $srt $turnos
 }
 
 if ($Hasta -eq "fusionar") {
@@ -142,8 +144,8 @@ if ($Hasta -eq "fusionar") {
 
 # --- 5. PDF de conversación: 2 versiones (desktop + celu) ---
 Paso "[5/5] Generando Conversacion (desktop + celu)" $pdf -SiempreRegenera {
-    & $python gen_pdf.py $habTxt $Titulo --formato desktop --out $pdf
-    & $python gen_pdf.py $habTxt $Titulo --formato celu --out (Join-Path $dir "Conversacion_celu.pdf")
+    & $python (Join-Path $src "gen_pdf.py") $habTxt $Titulo --formato desktop --out $pdf
+    & $python (Join-Path $src "gen_pdf.py") $habTxt $Titulo --formato celu --out (Join-Path $dir "Conversacion_celu.pdf")
 }
 
 Write-Host "`nListo. Resultados generados en: $dir" -ForegroundColor Green

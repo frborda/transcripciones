@@ -18,7 +18,8 @@ import uuid
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent
-TG_DIR = RAIZ / "incoming" / "tg"
+ROOT = RAIZ.parent
+TG_DIR = ROOT / "incoming" / "tg"
 OUTBOX = TG_DIR / "outbox"
 
 

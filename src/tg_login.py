@@ -13,11 +13,12 @@ from pathlib import Path
 from telethon import TelegramClient
 
 RAIZ = Path(__file__).resolve().parent
-cfg = json.loads((RAIZ / ".tg_config.json").read_text(encoding="utf-8"))
+ROOT = RAIZ.parent
+cfg = json.loads((ROOT / ".tg_config.json").read_text(encoding="utf-8"))
 
 
 async def main():
-    client = TelegramClient(str(RAIZ / "tg_user"), int(cfg["api_id"]), cfg["api_hash"])
+    client = TelegramClient(str(ROOT / "tg_user"), int(cfg["api_id"]), cfg["api_hash"])
     if cfg.get("phone"):
         await client.start(phone=cfg["phone"])
     else:

@@ -32,10 +32,11 @@ from pathlib import Path
 from telethon import TelegramClient, events
 
 RAIZ = Path(__file__).resolve().parent
-TG_DIR = RAIZ / "incoming" / "tg"
+ROOT = RAIZ.parent
+TG_DIR = ROOT / "incoming" / "tg"
 OUTBOX = TG_DIR / "outbox"
-INCOMING = RAIZ / "incoming"
-PROYECTOS = RAIZ / "proyectos"
+INCOMING = ROOT / "incoming"
+PROYECTOS = ROOT / "proyectos"
 DIAR_JOBS = TG_DIR / "diar_jobs"
 
 DIAR_PROC = None  # proceso del servicio de diarización (pre-warm del modelo)
@@ -56,7 +57,7 @@ client = None
 
 
 def cargar_config():
-    cfg = json.loads((RAIZ / ".tg_config.json").read_text(encoding="utf-8"))
+    cfg = json.loads((ROOT / ".tg_config.json").read_text(encoding="utf-8"))
     return (int(cfg["api_id"]), cfg["api_hash"], cfg.get("chat", "me"), cfg.get("phone"))
 
 
@@ -171,7 +172,7 @@ def lanzar_claude(prompt, chat_id):
         proc = subprocess.Popen([cmd, "--dangerously-skip-permissions",
                                  "--model", CLAUDE_MODEL, "--effort", CLAUDE_EFFORT,
                                  "-p", prompt],
-                                cwd=str(RAIZ), stdout=log, stderr=subprocess.STDOUT,
+                                cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
                                 creationflags=flags)
     finally:
         log.close()  # el hijo ya tiene su propio handle duplicado
@@ -239,7 +240,7 @@ async def trans_worker():
                 log = (chunk.parent / "transcripcion.log").open("a", encoding="utf-8")
                 try:
                     proc = subprocess.Popen([sys.executable, str(RAIZ / "transcribir.py"), str(chunk)],
-                                            cwd=str(RAIZ), stdout=log, stderr=subprocess.STDOUT)
+                                            cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT)
                 finally:
                     log.close()
                 while proc.poll() is None:
@@ -348,7 +349,7 @@ def arrancar_diar_service():
     try:
         slog = (TG_DIR / "diar_service.log").open("a", encoding="utf-8")
         DIAR_PROC = subprocess.Popen([sys.executable, str(RAIZ / "diarizar_service.py")],
-                                     cwd=str(RAIZ), stdout=slog, stderr=subprocess.STDOUT)
+                                     cwd=str(ROOT), stdout=slog, stderr=subprocess.STDOUT)
         print("[watcher] servicio de diarización pre-warm lanzado", flush=True)
     except Exception as e:
         print(f"[watcher] no pude lanzar el servicio de diarización: {e}", flush=True)
@@ -365,7 +366,7 @@ def pedir_diarizacion(wav: Path):
         try:
             dlog = (wav.parent / "diarizacion.log").open("w", encoding="utf-8")
             subprocess.Popen([sys.executable, str(RAIZ / "diarizar.py"), str(wav)],
-                             cwd=str(RAIZ), stdout=dlog, stderr=subprocess.STDOUT)
+                             cwd=str(ROOT), stdout=dlog, stderr=subprocess.STDOUT)
             print(f"[watcher] servicio caído; diarizar.py directo: {wav.name}", flush=True)
         except Exception as e:
             print(f"[watcher] no pude diarizar: {e}", flush=True)
@@ -378,7 +379,7 @@ async def correr_script(args, log_path):
     except Exception:
         lf = subprocess.DEVNULL
     try:
-        proc = subprocess.Popen([sys.executable] + args, cwd=str(RAIZ),
+        proc = subprocess.Popen([sys.executable] + args, cwd=str(ROOT),
                                 stdout=lf, stderr=subprocess.STDOUT)
     except Exception as e:
         print(f"[watcher] error lanzando {args[0]}: {e}", flush=True)
@@ -489,7 +490,7 @@ async def main_async():
     TG_DIR.mkdir(parents=True, exist_ok=True)
     INCOMING.mkdir(parents=True, exist_ok=True)
     PROYECTOS.mkdir(parents=True, exist_ok=True)
-    client = TelegramClient(str(RAIZ / "tg_user"), api_id, api_hash)
+    client = TelegramClient(str(ROOT / "tg_user"), api_id, api_hash)
     client.add_event_handler(on_message, events.NewMessage(chats=chat))
     await client.connect()
     if not await client.is_user_authorized():

@@ -21,16 +21,16 @@ _run_*
 estado.json
 
 # === Grabador de escritorio (Go) ===
-grabador/GrabadorReuniones.exe
-grabador/*.exe
+clients/grabador/GrabadorReuniones.exe
+clients/grabador/*.exe
 
 # === App Android (apk/) ===
-apk/.gradle/
-apk/build/
-apk/app/build/
-apk/captures/
-apk/local.properties
-apk/.idea/
+clients/apk/.gradle/
+clients/apk/build/
+clients/apk/app/build/
+clients/apk/captures/
+clients/apk/local.properties
+clients/apk/.idea/
 *.apk
 *.aab
 *.keystore

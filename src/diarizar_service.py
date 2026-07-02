@@ -18,7 +18,8 @@ import time
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent
-JOBS = RAIZ / "incoming" / "tg" / "diar_jobs"
+ROOT = RAIZ.parent
+JOBS = ROOT / "incoming" / "tg" / "diar_jobs"
 
 
 def main() -> int:
@@ -41,7 +42,7 @@ def main() -> int:
     torch.set_num_threads(6)
     JOBS.mkdir(parents=True, exist_ok=True)
 
-    token = (RAIZ / ".hf_token").read_text(encoding="utf-8").strip()
+    token = (ROOT / ".hf_token").read_text(encoding="utf-8").strip()
     # community-1 (más preciso) con fallback al 3.1
     pipeline = None
     for modelo in ("pyannote/speaker-diarization-community-1", "pyannote/speaker-diarization-3.1"):

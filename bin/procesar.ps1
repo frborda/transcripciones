@@ -45,7 +45,8 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
-$root = $PSScriptRoot
+$binDir = $PSScriptRoot
+$root = Split-Path -Parent $PSScriptRoot
 $proyectosDir = Join-Path $root "proyectos"
 $null = New-Item -ItemType Directory -Force -Path $proyectosDir | Out-Null
 
@@ -77,7 +78,7 @@ foreach ($a in $Audio) {
     Write-Host "==================================================" -ForegroundColor Green
 
     # solo transcripción: el resto lo orquesta Claude (correcciones, diarización, nombres, PDF)
-    & (Join-Path $root "ejecutar.ps1") -Audio $destAudio -Modelo $Modelo -Device $Device -Hasta transcribir
+    & (Join-Path $binDir "ejecutar.ps1") -Audio $destAudio -Modelo $Modelo -Device $Device -Hasta transcribir
 
     $srt = Join-Path $destDir ($bname + ".srt")
     if (Test-Path -LiteralPath $srt) {

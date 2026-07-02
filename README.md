@@ -17,6 +17,24 @@ chat y te llegan los PDFs) o **manualmente** desde la consola.
 
 ---
 
+## Estructura del proyecto
+
+```
+transcripciones/
+├── src/              # pipeline en Python (transcribir, diarizar, fusionar, PDFs, Telegram)
+├── bin/              # PowerShell: puntos de entrada (procesar, ejecutar, finalizar, tg_watcher)
+├── clients/          # apps de grabación
+│   ├── grabador/     #   escritorio (Go, Windows)
+│   └── apk/          #   Android
+├── .github/workflows # CI que publica los binarios como Releases
+├── requirements.txt
+├── README.md
+├── .tg_config.json   # credenciales de Telegram (no se versiona; ver .example)
+├── .hf_token         # token de Hugging Face (no se versiona; ver .example)
+├── incoming/         # trabajo temporal del watcher (no se versiona)
+└── proyectos/        # salida por reunión: transcripciones y PDFs (no se versiona)
+```
+
 ## 1. Requisitos
 
 - **Windows 10/11** con **PowerShell 5.1** (los `.ps1` van en UTF-8 con BOM).
@@ -90,13 +108,13 @@ notepad .tg_config.json
 3. Login interactivo de Telegram (una sola vez; pide el código que te llega):
 
 ```powershell
-python tg_login.py
+python src\tg_login.py
 ```
 
 4. Dejá el servicio corriendo:
 
 ```powershell
-.\tg_watcher.ps1
+.\bin\tg_watcher.ps1
 ```
 
 ## 4. Uso
@@ -117,20 +135,20 @@ Con el watcher corriendo, en el chat configurado:
 
 ```powershell
 # 1) Crear el proyecto y transcribir (se detiene para la corrección)
-.\procesar.ps1 "C:\ruta\al\audio.m4a"
+.\bin\procesar.ps1 "C:\ruta\al\audio.m4a"
 
 #    -> Claude Code corrige el .srt/.txt por contexto (pasada 1)
 
 # 2) WAV + diarización + fusión sobre el .srt corregido
-.\ejecutar.ps1 -Audio "proyectos\<nombre>\<nombre>.m4a" -Hasta fusionar
+.\bin\ejecutar.ps1 -Audio "proyectos\<nombre>\<nombre>.m4a" -Hasta fusionar
 
-#    -> identificar hablantes (renombrar.py) y pasada 2 de corrección (Claude)
+#    -> identificar hablantes (src\renombrar.py) y pasada 2 de corrección (Claude)
 
 # 3) Generar los PDFs (ejemplo: conversación en ambos formatos)
 $py = "$env:USERPROFILE\venv\Scripts\python.exe"
-& $py gen_pdf.py "proyectos\<n>\<n>_hablantes.txt" "Título" --formato desktop --out "proyectos\<n>\Conversacion_desktop.pdf"
-& $py gen_pdf.py "proyectos\<n>\<n>_hablantes.txt" "Título" --formato celu    --out "proyectos\<n>\Conversacion_celu.pdf"
-# análogo con gen_minuta.py (Minuta.md / Preguntas.md) y gen_diagrama.py (diagrama.json)
+& $py src\gen_pdf.py "proyectos\<n>\<n>_hablantes.txt" "Título" --formato desktop --out "proyectos\<n>\Conversacion_desktop.pdf"
+& $py src\gen_pdf.py "proyectos\<n>\<n>_hablantes.txt" "Título" --formato celu    --out "proyectos\<n>\Conversacion_celu.pdf"
+# análogo con src\gen_minuta.py (Minuta.md / Preguntas.md) y src\gen_diagrama.py (diagrama.json)
 ```
 
 ## 5. Salida
@@ -140,6 +158,8 @@ Todo queda aislado en `proyectos\<nombre>\`, con los 8 PDFs de nombres fijos:
 `Diagrama_{desktop,celu}.pdf`, `Preguntas_{desktop,celu}.pdf`.
 
 ## 6. Scripts (referencia)
+
+Los scripts de Python están en `src/`; los de PowerShell (puntos de entrada), en `bin/`.
 
 | Script | Qué hace |
 |--------|----------|
@@ -175,8 +195,8 @@ Todo queda aislado en `proyectos\<nombre>\`, con los 8 PDFs de nombres fijos:
 
 Graban la reunión y la mandan solos (`inicio`/partes/`fin`) por Telegram:
 
-- `grabador/` — grabador de escritorio para Windows (Go).
-- `apk/` — app de grabación para Android.
+- `clients/grabador/` — grabador de escritorio para Windows (Go).
+- `clients/apk/` — app de grabación para Android.
 
 **Binarios ya compilados:** se publican automáticamente en la página de
 [**Releases**](https://github.com/frborda/transcripciones/releases) —

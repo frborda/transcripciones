@@ -29,7 +29,8 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
-$root = $PSScriptRoot
+$root = Split-Path -Parent $PSScriptRoot
+$src  = Join-Path $root "src"
 $python =
     if ($env:VIRTUAL_ENV -and (Test-Path (Join-Path $env:VIRTUAL_ENV "Scripts\python.exe"))) {
         Join-Path $env:VIRTUAL_ENV "Scripts\python.exe"
@@ -48,12 +49,12 @@ $dirOut = Split-Path -Parent $txtFull
 $pdf = Join-Path $dirOut "Conversacion_desktop.pdf"
 
 Write-Host "Aplicando nombres ..." -ForegroundColor Cyan
-& $python (Join-Path $root "renombrar.py") $txtFull @Nombres
+& $python (Join-Path $src "renombrar.py") $txtFull @Nombres
 if (-not $?) { Write-Error "Falló renombrar.py"; exit 1 }
 
 Write-Host "`nGenerando Conversacion (desktop + celu) ..." -ForegroundColor Cyan
-& $python (Join-Path $root "gen_pdf.py") $txtFull $Titulo --formato desktop --out $pdf
-& $python (Join-Path $root "gen_pdf.py") $txtFull $Titulo --formato celu --out (Join-Path $dirOut "Conversacion_celu.pdf")
+& $python (Join-Path $src "gen_pdf.py") $txtFull $Titulo --formato desktop --out $pdf
+& $python (Join-Path $src "gen_pdf.py") $txtFull $Titulo --formato celu --out (Join-Path $dirOut "Conversacion_celu.pdf")
 
 if ((Test-Path -LiteralPath $pdf) -and ((Get-Item -LiteralPath $pdf).Length -gt 0)) {
     Write-Host "`nConversacion (desktop+celu) generado en: $dirOut" -ForegroundColor Green

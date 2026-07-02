@@ -11,7 +11,9 @@
     Después, dejar esto corriendo:  .\tg_watcher.ps1
 #>
 $ErrorActionPreference = "Continue"
-Set-Location -Path $PSScriptRoot
+$root = Split-Path -Parent $PSScriptRoot
+$src  = Join-Path $root "src"
+Set-Location -Path $root
 
 $python =
     if ($env:VIRTUAL_ENV -and (Test-Path (Join-Path $env:VIRTUAL_ENV "Scripts\python.exe"))) {
@@ -20,7 +22,7 @@ $python =
         Join-Path $env:USERPROFILE "venv\Scripts\python.exe"
     } else { "python" }
 
-if (-not (Test-Path (Join-Path $PSScriptRoot ".tg_config.json"))) {
+if (-not (Test-Path (Join-Path $root ".tg_config.json"))) {
     Write-Error "Falta .tg_config.json (copiá .tg_config.example.json y completá api_id/api_hash)."
     exit 1
 }
@@ -35,7 +37,7 @@ Write-Host "CLAUDE_CMD = $env:CLAUDE_CMD" -ForegroundColor DarkGray
 
 Write-Host "Watcher de Telegram corriendo (Ctrl+C para frenar)..." -ForegroundColor Green
 while ($true) {
-    & $python (Join-Path $PSScriptRoot "tg_watcher.py")
+    & $python (Join-Path $src "tg_watcher.py")
     Write-Warning "El watcher terminó (código $LASTEXITCODE). Reinicio en 5s..."
     Start-Sleep -Seconds 5
 }
