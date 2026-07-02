@@ -1,0 +1,17 @@
+# Dependencias del pipeline de transcripción + diarización.
+#
+# torch/torchaudio van con CUDA 12.8 para usar la GPU. Instálalos APARTE con el
+# índice de PyTorch (no desde PyPI), ANTES de este archivo:
+#
+#   pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 \
+#       --index-url https://download.pytorch.org/whl/cu128
+#
+# Luego el resto:
+#   pip install -r requirements.txt
+
+faster-whisper==1.2.0     # transcripción (Whisper large-v3)
+pyannote.audio==4.0.0     # diarización (requiere token de HuggingFace en .hf_token)
+soundfile==0.13.1         # unión de chunks / lectura-escritura WAV
+reportlab==4.5.1          # generación de los PDFs
+Telethon==1.43.2          # servicio de Telegram (tg_watcher.py / tg_login.py)
+gdown==6.1.0              # ingesta opcional de audios desde Google Drive

@@ -1,0 +1,75 @@
+name: Release builds
+
+# Compila los clientes de grabación y publica los binarios como assets de la Release.
+#   - Push de un tag `v*`  -> crea/actualiza la Release de ese tag con los binarios.
+#   - Ejecución manual      -> deja los binarios como artefactos del run (para probar).
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  grabador-windows:
+    name: Grabador de escritorio (Windows .exe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: grabador/go.mod
+
+      - name: Compilar (cross-compile a Windows amd64)
+        working-directory: grabador
+        run: GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui -s -w" -o GrabadorReuniones.exe .
+
+      - name: Publicar en la Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: grabador/GrabadorReuniones.exe
+
+      - name: Subir artefacto (runs manuales)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: GrabadorReuniones-exe
+          path: grabador/GrabadorReuniones.exe
+
+  apk-android:
+    name: App Android (.apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Compilar APK (debug, instalable)
+        working-directory: apk
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Renombrar APK
+        run: cp apk/app/build/outputs/apk/debug/app-debug.apk GrabadorReuniones.apk
+
+      - name: Publicar en la Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: GrabadorReuniones.apk
+
+      - name: Subir artefacto (runs manuales)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: GrabadorReuniones-apk
+          path: GrabadorReuniones.apk
