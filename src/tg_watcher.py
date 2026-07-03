@@ -9,9 +9,9 @@ Es el ÚNICO proceso con la sesión de Telegram. Hace estas cosas:
      que llega mientras está abierta es una PARTE (chunk) que se transcribe ya
      mismo en segundo plano (GPU), sin preguntar ni entregar nada. El texto 'fin'
      cierra la sesión: se esperan las transcripciones pendientes y se lanza UNA
-     sesión headless que une todo (unir_chunks.py), diariza, pregunta hablantes y
-     entrega los 4 PDFs (Conversación y Minuta). Minimiza la espera entre el fin de
-     la reunión y los PDFs.
+     sesión headless que une todo (unir_chunks.py), diariza, identifica hablantes y
+     entrega los 6 PDFs (Conversación, Minuta y Definiciones). Minimiza la espera
+     entre el fin de la reunión y los PDFs.
      Las sesiones sobreviven a reinicios del watcher (estado.json).
   3. Atiende la "outbox": trabajos que deja `tg.py` (enviar mensajes / documentos).
   4. Evita procesar sus propios mensajes salientes (lleva los ids que envió).
@@ -154,9 +154,15 @@ PASOS_FINALES = (
     "como objeto JSON de número de hablante a etiqueta asignada (claves \"1\", \"2\", ...). "
     "Después corré `identificar.py <_hablantes.srt> <wav> --actualizar` para refrescar la "
     "banca con las voces reconocidas. "
-    "{n2}) Redactar Minuta.md con esas etiquetas y generar los 4 PDFs "
-    "(Conversacion y Minuta, cada uno en desktop y celu). "
-    "{n3}) Enviar los 4 PDFs con `tg.py send-document {chat} ...` y después UN ÚNICO mensaje "
+    "{n2}) Redactar Minuta.md y Definiciones.md con esas etiquetas y generar los 6 PDFs "
+    "(Conversacion, Minuta y Definiciones, cada uno en desktop y celu; los .md se "
+    "renderizan con gen_minuta.py). Definiciones.md NO es un resumen: es el detalle "
+    "EXHAUSTIVO de cada definición/decisión tomada en la reunión, una por una y "
+    "agrupadas por tema, con qué se definió exactamente, el comportamiento esperado, "
+    "las condiciones y casos borde que se mencionaron y qué quedó abierto de esa "
+    "definición; que no se escape nada que alguien haya definido: es el input de "
+    "trabajo para implementar lo hablado. "
+    "{n3}) Enviar los 6 PDFs con `tg.py send-document {chat} ...` y después UN ÚNICO mensaje "
     "con `tg.py send-message {chat} ...` que diga: ✅ Listo, la lista de hablantes asignados "
     "(1=<etiqueta>, 2=<etiqueta>, ...) y que para cambiarlos puede responder cuando quiera: "
     "renombrar 1=Nombre, 2=Nombre (se regeneran y reenvían los PDFs). NO esperes ninguna "
@@ -185,12 +191,12 @@ def prompt_renombrar(orden, chat_id):
         "3) Interpretar el pedido (formato típico: renombrar 1=Nombre, 2=Nombre; los números "
         "refieren a las claves de hablantes.json): aplicar renombrar.py sobre el _hablantes.txt "
         "con pares '<etiqueta actual>=<nombre nuevo>', hacer el mismo reemplazo en Minuta.md "
-        "y actualizar hablantes.json. "
+        "y Definiciones.md, y actualizar hablantes.json. "
         "4) ENROLAR las voces con sus nombres nuevos para que las próximas reuniones los "
         "reconozcan solas: `identificar.py <_hablantes.srt> <wav del proyecto> --enrolar "
         "\"<nombre nuevo>=<nombre nuevo>\" ...` (renombrar.py ya renombró las claves viejas "
         "de voces.json si existían). "
-        "5) Regenerar los 4 PDFs y enviarlos con `tg.py send-document " + str(chat_id) + " ...` "
+        "5) Regenerar los 6 PDFs y enviarlos con `tg.py send-document " + str(chat_id) + " ...` "
         "más un mensaje final corto. " + REGLAS_ONESHOT
     )
 
