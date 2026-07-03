@@ -31,7 +31,7 @@ from reportlab.lib.units import mm
 from reportlab.lib import colors
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, HRFlowable, ListFlowable, ListItem,
-    PageBreak,
+    PageBreak, Table, TableStyle,
 )
 from reportlab.platypus.tableofcontents import TableOfContents
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -75,6 +75,8 @@ def main() -> int:
                     help="desktop (A4) o celu (página angosta, letra grande)")
     ap.add_argument("--indice", action="store_true",
                     help="Índice clickeable con las secciones '##' tras el título")
+    ap.add_argument("--subtitulo", default=None,
+                    help='Línea de metadatos bajo el título (p. ej. "Reunión del 2/7 · 90 min")')
     args = ap.parse_args()
 
     src = Path(args.md)
@@ -155,8 +157,42 @@ def main() -> int:
             continue
         if s.startswith("# "):
             flush()
-            flow.append(Paragraph(inline(s[2:]), st_title))
-            flow.append(HRFlowable(width="100%", thickness=1, color=AZUL, spaceAfter=6))
+            # Bloque de título: banda de color con el TIPO de documento arriba
+            # ("DEFINICIONES") y el nombre de la reunión en grande. Si el H1 trae
+            # "Tipo — Nombre" se separa; si no, va todo como título.
+            titulo_md = s[2:].strip()
+            kicker, nombre = (None, titulo_md)
+            for sep in ("—", " - "):
+                if sep in titulo_md:
+                    kicker, nombre = (x.strip() for x in titulo_md.split(sep, 1))
+                    break
+            st_kick = ParagraphStyle("kick", parent=ss["Normal"], fontSize=fs_p - 1,
+                                     leading=fs_p + 1, textColor=colors.white)
+            st_tt = ParagraphStyle("tt2", parent=ss["Title"], fontSize=fs_t,
+                                   leading=fs_t + 4, textColor=colors.white,
+                                   alignment=0, spaceBefore=0, spaceAfter=0)
+            celda = []
+            if kicker:
+                celda.append(Paragraph(
+                    f"<b>{inline(kicker).upper()}</b>", st_kick))
+                celda.append(Spacer(1, 3))
+            celda.append(Paragraph(f"<b>{inline(nombre)}</b>", st_tt))
+            ancho = pagesize[0] - 2 * margen
+            banda = Table([[celda]], colWidths=[ancho])
+            banda.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), AZUL),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 9),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+            ]))
+            flow.append(banda)
+            if args.subtitulo:
+                st_sub = ParagraphStyle("sub", parent=ss["Normal"], fontSize=fs_p - 0.5,
+                                        leading=fs_p + 3, textColor=GRIS,
+                                        spaceBefore=5, spaceAfter=2)
+                flow.append(Paragraph(f"<i>{inline(args.subtitulo)}</i>", st_sub))
+            flow.append(Spacer(1, 4))
             if args.indice:
                 flow.append(Spacer(1, 8))
                 flow.append(Paragraph("Índice", st_toc_tit))
