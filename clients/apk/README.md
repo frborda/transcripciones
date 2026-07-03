@@ -13,7 +13,7 @@ App Android que graba reuniones con la pantalla bloqueada y va subiendo el audio
   una vibración como confirmación. Subir volumen no hace nada mientras se graba
   (la app captura las teclas de volumen vía MediaSession durante la grabación).
 - **⏹ FINALIZAR**: sube el último segmento y manda `fin`: la PC une las partes,
-  diariza, pregunta los hablantes por Telegram y entrega los 8 PDFs en el chat.
+  diariza, pregunta los hablantes por Telegram y entrega los 4 PDFs en el chat.
 - Las subidas van en cola con reintentos (aguanta cortes de conexión); el `fin`
   siempre sale después de la última parte.
 

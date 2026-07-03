@@ -1,12 +1,10 @@
 # Transcripción de reuniones → 4 PDFs
 
-Convierte el audio de una reunión en **4 entregables** (cada uno en 2 formatos, PC y
-celular → **8 PDFs**):
+Convierte el audio de una reunión en **2 entregables** (cada uno en 2 formatos, PC y
+celular → **4 PDFs**):
 
 1. **Conversación** — transcripción corregida y separada por hablante.
 2. **Minuta** — resumen, temas, decisiones, tareas por persona y pasos a seguir.
-3. **Diagrama** — diagrama de flujo del tema tratado.
-4. **Preguntas** — temas que quedaron poco claros, para aclarar después.
 
 El pipeline mecánico (transcribir, diarizar, unir, maquetar PDFs) lo hacen scripts de
 Python; el análisis (correcciones por contexto e identificación de hablantes y la
@@ -124,11 +122,11 @@ python src\tg_login.py
 
 Con el watcher corriendo, en el chat configurado:
 
-- **Audio suelto** → se procesa entero y te llegan los 8 PDFs.
+- **Audio suelto** → se procesa entero y te llegan los 4 PDFs.
 - **Modo incremental** (ir mandando la reunión por partes mientras se graba):
   - `inicio` → abre la sesión.
   - mandás audios (cada uno es una parte, se transcribe en el momento).
-  - `fin` → une todo, diariza y te entrega los 8 PDFs.
+  - `fin` → une todo, diariza y te entrega los 4 PDFs.
 - **Renombrar hablantes** (después de recibir los PDFs):
   `renombrar 1=Juan, 2=María, 3=...` → regenera y reenvía los PDFs con los nombres.
 
@@ -149,14 +147,13 @@ Con el watcher corriendo, en el chat configurado:
 $py = "$env:USERPROFILE\venv\Scripts\python.exe"
 & $py src\gen_pdf.py "proyectos\<n>\<n>_hablantes.txt" "Título" --formato desktop --out "proyectos\<n>\Conversacion_desktop.pdf"
 & $py src\gen_pdf.py "proyectos\<n>\<n>_hablantes.txt" "Título" --formato celu    --out "proyectos\<n>\Conversacion_celu.pdf"
-# análogo con src\gen_minuta.py (Minuta.md / Preguntas.md) y src\gen_diagrama.py (diagrama.json)
+# análogo con src\gen_minuta.py (Minuta.md) para la minuta
 ```
 
 ## 5. Salida
 
-Todo queda aislado en `proyectos\<nombre>\`, con los 8 PDFs de nombres fijos:
-`Conversacion_{desktop,celu}.pdf`, `Minuta_{desktop,celu}.pdf`,
-`Diagrama_{desktop,celu}.pdf`, `Preguntas_{desktop,celu}.pdf`.
+Todo queda aislado en `proyectos\<nombre>\`, con los 4 PDFs de nombres fijos:
+`Conversacion_{desktop,celu}.pdf` y `Minuta_{desktop,celu}.pdf`.
 
 ## 6. Scripts (referencia)
 
@@ -177,8 +174,7 @@ Los scripts de Python están en `src/`; los de PowerShell (puntos de entrada), e
 | `frases.py` | Muestra las frases más identificativas de cada hablante. |
 | `renombrar.py` | Aplica los nombres reales a los hablantes. |
 | `gen_pdf.py` | PDF de la conversación por hablante. |
-| `gen_minuta.py` | Markdown → PDF formal (Minuta y Preguntas). |
-| `gen_diagrama.py` | Diagrama de flujo (reportlab, sin graphviz). |
+| `gen_minuta.py` | Markdown → PDF formal (Minuta). |
 | `finalizar.ps1` | Atajo: renombrar + PDF de conversación. |
 
 ## 7. Notas

@@ -58,7 +58,7 @@ Write-Host "`nGenerando Conversacion (desktop + celu) ..." -ForegroundColor Cyan
 
 if ((Test-Path -LiteralPath $pdf) -and ((Get-Item -LiteralPath $pdf).Length -gt 0)) {
     Write-Host "`nConversacion (desktop+celu) generado en: $dirOut" -ForegroundColor Green
-    Write-Host "Nota: Minuta/Diagrama/Preguntas (desktop+celu) los genera Claude (análisis)." -ForegroundColor DarkGray
+    Write-Host "Nota: la Minuta (desktop+celu) la genera Claude (análisis)." -ForegroundColor DarkGray
 } else {
     Write-Error "No se generó el PDF esperado: $pdf"
     exit 1
