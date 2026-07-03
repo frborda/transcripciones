@@ -134,6 +134,18 @@ copy .hf_token.example .hf_token
 notepad .hf_token
 ```
 
+### Glosario del dominio (opcional, recomendado)
+
+Un archivo local con los términos y nombres propios que el ASR suele errar en TUS
+reuniones (siglas, jerga, gente recurrente); `transcribir.py` lo usa como *hotwords*
+para sesgar el decodificado. No se versiona: arrancá del ejemplo y alimentalo cada
+vez que detectes un error nuevo.
+
+```powershell
+copy glosario.txt.example glosario.txt
+notepad glosario.txt
+```
+
 ## 3. Configurar el modo Telegram (servicio 24/7)
 
 1. Entrá a <https://my.telegram.org> → **API development tools** → obtené tu

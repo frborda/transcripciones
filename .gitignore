@@ -20,9 +20,10 @@ _run_*
 *.pid
 estado.json
 
-# === Banca de voces (embeddings biometricos, solo local) ===
+# === Datos personales del dominio (solo local; ver *.example) ===
 voces.json
 identificacion.json
+glosario.txt
 
 # === Grabador de escritorio (Go) ===
 clients/grabador/GrabadorReuniones.exe

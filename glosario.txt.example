@@ -1,0 +1,24 @@
+# Glosario del dominio para la transcripción (hotwords de faster-whisper).
+# Copiá este archivo a glosario.txt (no se versiona: contiene términos y nombres
+# propios de TUS reuniones) y poné un término por línea; las líneas con # se ignoran.
+#
+# Qué poner: SOLO lo que el ASR erra o suele errar — siglas, jerga del dominio y
+# nombres propios recurrentes. Lo que whisper ya transcribe bien NO se agrega:
+# el glosario comparte los ~224 tokens del prompt (unos ~900 caracteres) y un
+# glosario inflado diluye el sesgo (transcribir.py avisa si te pasás).
+#
+# Mantenimiento: cada vez que detectes un error nuevo en las pasadas de
+# corrección (p. ej. "cuervo" en vez de "QR"), agregá acá el término correcto.
+
+# --- siglas y sistemas (ejemplos) ---
+QR
+PDF
+API
+
+# --- jerga del dominio (ejemplos) ---
+expediente
+minuta
+
+# --- nombres propios recurrentes (ejemplos) ---
+Juan Pérez
+María González
