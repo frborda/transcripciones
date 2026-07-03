@@ -19,21 +19,17 @@ chat y te llegan los PDFs) o **manualmente** desde la consola.
 
 ## Instalación asistida con Claude Code en Windows 11 (recomendada)
 
-Todo lo de las secciones 1 a 3 lo puede hacer **Claude Code solo** en una máquina
-**Windows 11**, guiándote únicamente en los pasos que requieren credenciales tuyas.
-Solo necesitás [Claude Code](https://claude.com/claude-code) instalado; lo que falte
-(git, Python, ffmpeg) lo instala Claude con `winget`, que ya viene con Windows 11.
-
-Abrí **PowerShell**, y si todavía no clonaste el repo:
+Para delegar la instalación completa en Claude Code: cloná el repo, abrí `claude`
+adentro y pegá el prompt de abajo. Hace las secciones 1 a 3 de punta a punta
+(instala lo que falte con `winget`, arma el venv con PyTorch cu128, valida el stack,
+configura los tokens, corre el login de Telegram, prueba de humo y deja el watcher
+escuchando); solo interviene para pedirte credenciales.
 
 ```powershell
-winget install --id Git.Git -e   # solo si no tenés git
 git clone <URL-del-repo> trascripciones
 cd trascripciones
 claude
 ```
-
-Y pegale este prompt:
 
 ```text
 Instalá y configurá este proyecto de punta a punta en esta máquina con
@@ -68,10 +64,7 @@ conviertas. No inventes credenciales: pedímelas cuando haga falta. Al final,
 resumime qué quedó instalado, qué configuraste y cómo mando mi primera reunión.
 ```
 
-Claude Code ejecuta cada paso, instala lo que falte con `winget`, te pide las
-credenciales cuando toca (los logins interactivos los corrés vos con el prefijo `!`)
-y valida todo antes de dejarte el watcher escuchando. La instalación manual
-equivalente está en las secciones 1 a 3.
+La instalación manual equivalente está en las secciones 1 a 3.
 
 ---
 
