@@ -50,6 +50,7 @@ class RecordService : Service() {
         const val CANAL = "grabacion"
         const val UMBRAL_SILENCIO = 1800   // amplitud (0..32767) por debajo = "silencio"
         const val MAX_ESPERA_MS = 30_000L  // si no hay pausa tras el intervalo, cortar igual
+        const val TOPE_PARTE_MS = 45 * 60 * 1000  // tope duro por parte (evita el 413 de Telegram)
 
         @Volatile var corriendo = false
         @Volatile var estado = "detenido"
@@ -72,14 +73,16 @@ class RecordService : Service() {
 
     private var recorder: MediaRecorder? = null
     private var archivoActual: File? = null
-    private var parte = 0
+    @Volatile private var parte = 0            // lo lee el uploader: volátil por visibilidad
     private var sesion = ""
-    private var finalizando = false
+    @Volatile private var finalizando = false  // idem: lo lee el uploader
     private var wakeLock: PowerManager.WakeLock? = null
     private var mediaSession: MediaSessionCompat? = null
     private var ultimoCorteVol = 0L
     private val handler = Handler(Looper.getMainLooper())
     private val cola = LinkedBlockingQueue<Trabajo>()
+    private var uploader: Thread? = null
+    @Volatile private var uploaderActivo = false
 
     // Al cumplirse el intervalo no cortamos de una: "armamos" y esperamos la primera
     // pausa (silencio) para no cortar en medio de una frase.
@@ -101,7 +104,9 @@ class RecordService : Service() {
             val r = recorder
             if (r == null || finalizando) return
             val amp = try { r.maxAmplitude } catch (e: Exception) { 0 }
-            if (amp in 1 until UMBRAL_SILENCIO) bajos++ else bajos = 0
+            // incluir amp==0 (silencio digital total): antes lo tomaba como "no silencio"
+            // y reseteaba el contador, así una pausa muda nunca disparaba el corte.
+            if (amp < UMBRAL_SILENCIO) bajos++ else bajos = 0
             val venció = SystemClock.elapsedRealtime() - desde > MAX_ESPERA_MS
             if (bajos >= 3 || venció) { // 3 ventanas de 150 ms ≈ pausa de ~0,45 s
                 rotar()
@@ -151,9 +156,27 @@ class RecordService : Service() {
         // reciente, RETOMARLA: misma sesión, sigue la numeración y reenvía lo que no
         // llegó a subirse, en orden. Si no, sesión nueva.
         val previa = Prefs.sesionActiva(this)
-        val retomar = previa.isNotEmpty() &&
+        val reciente = previa.isNotEmpty() &&
                 ultimaActividad(previa) > System.currentTimeMillis() - 6 * 3600_000L
-        if (retomar) {
+
+        // la app murió DESPUÉS de tocar Finalizar: NO grabar más (el usuario ya salió
+        // de la reunión), solo reenviar lo pendiente y mandar "fin".
+        if (reciente && Prefs.estaFinalizando(this)) {
+            sesion = previa
+            parte = Prefs.parteActual(this)
+            sesionId = sesion
+            tTotal = System.currentTimeMillis()
+            finalizando = true
+            reencolarPendientes(sesion)
+            cola.put(Trabajo.Texto("fin"))
+            cola.put(Trabajo.Fin)
+            pendientesN = pendientes()
+            estado = "reanudando cierre: subiendo lo pendiente..."
+            notificar(estado)
+            return
+        }
+
+        if (reciente) {
             sesion = previa
             parte = Prefs.parteActual(this)
             reencolarPendientes(sesion)
@@ -239,15 +262,39 @@ class RecordService : Service() {
         val f = File(dirGrab(), "reunion_${sesion}_p" + "%03d".format(parte) + ".m4a")
         val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this)
         else @Suppress("DEPRECATION") MediaRecorder()
-        r.setAudioSource(MediaRecorder.AudioSource.MIC)
-        r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-        r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-        r.setAudioChannels(1)
-        r.setAudioSamplingRate(44100)
-        r.setAudioEncodingBitRate(96000)
-        r.setOutputFile(f.absolutePath)
-        r.prepare()
-        r.start()
+        try {
+            r.setAudioSource(MediaRecorder.AudioSource.MIC)
+            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            r.setAudioChannels(1)
+            r.setAudioSamplingRate(44100)
+            r.setAudioEncodingBitRate(96000)
+            r.setOutputFile(f.absolutePath)
+            // tope duro por parte: si el intervalo automático está apagado, evita que
+            // un segmento crezca sin límite y Telegram lo rechace con 413.
+            r.setMaxDuration(TOPE_PARTE_MS)
+            r.setOnInfoListener { _, what, _ ->
+                if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
+                    handler.post {
+                        if (recorder != null && !finalizando) { rotar(); reprogramarAuto() }
+                    }
+                }
+            }
+            r.prepare()
+            r.start()
+        } catch (e: Exception) {
+            // mic ocupado por otra app / permiso revocado: NO crashear (evita el bucle
+            // de reinicio de START_STICKY). Mostrar el error y reintentar en unos segundos.
+            try { r.release() } catch (_: Exception) {}
+            recorder = null
+            parte--   // el intento fallido no consume número de parte
+            estado = "ERROR micrófono: ${e.message ?: "no disponible"} (reintentando)"
+            notificar(estado)
+            if (!finalizando) handler.postDelayed({
+                if (corriendo && recorder == null && !finalizando) empezarSegmento()
+            }, 4000)
+            return
+        }
         recorder = r
         archivoActual = f
         parteN = parte
@@ -262,14 +309,14 @@ class RecordService : Service() {
         recorder = null
         archivoActual = null
         grabandoArchivo = ""
-        return try {
-            r.stop()
-            f
-        } catch (e: Exception) {
-            null   // segmento demasiado corto o sin datos: se descarta
-        } finally {
-            r.release()
-        }
+        try { r.stop() } catch (e: Exception) { } finally { r.release() }
+        if (f == null) return null
+        // stop() puede fallar tanto por un segmento vacío/corrupto como porque el tope
+        // de duración ya cerró el archivo. Distinguir por tamaño: si tiene contenido
+        // real, conservarlo; si no, BORRARLO para que reencolarPendientes no lo resuba.
+        if (f.length() > 2000) return f
+        f.delete()
+        return null
     }
 
     private fun rotar() {
@@ -285,6 +332,7 @@ class RecordService : Service() {
     private fun finalizar() {
         if (!corriendo || finalizando) return
         finalizando = true
+        Prefs.marcarFinalizando(this, true)  // sobrevive a que el SO mate el proceso a mitad
         handler.removeCallbacks(corteAuto)
         handler.removeCallbacks(esperaSilencio)
         val f = pararSegmento()
@@ -300,35 +348,57 @@ class RecordService : Service() {
 
     // ---------- cola de subidas (FIFO, con reintentos) ----------
 
+    // un 4xx (salvo 429 rate-limit) no se arregla reintentando: token/chat malos o
+    // archivo demasiado grande. Reintentar eterno solo bloquea la cola y el "fin".
+    private fun esPermanente(code: Int) = code in 400..499 && code != 429
+
     private fun arrancarUploader() {
-        Thread {
+        if (uploaderActivo) return   // no arrancar dos uploaders sobre la misma cola
+        uploaderActivo = true
+        uploader = Thread {
             val token = Prefs.token(this)
             val chat = Prefs.chatId(this)
-            while (true) {
-                when (val t = cola.take()) {
+            while (uploaderActivo) {
+                val t = try { cola.take() } catch (e: InterruptedException) { break }
+                when (t) {
                     is Trabajo.Audio -> {
                         subiendoAhora = t.f.name
                         var intento = 0
-                        while (!TelegramApi.sendDocument(token, chat, t.f)) {
+                        var permanente = false
+                        while (true) {
+                            val code = TelegramApi.sendDocument(token, chat, t.f)
+                            if (code == 200) break
+                            if (esPermanente(code)) { permanente = true; break }
                             intento++
                             estado = "sin conexión, reintento ${intento} (${t.f.name})"
                             Thread.sleep(if (intento > 12) 60_000L else 5_000L * intento)
                         }
-                        t.f.renameTo(File(t.f.parentFile, "ok_" + t.f.name))
+                        if (permanente) {
+                            // apartar el archivo y seguir la cola (no bloquear el "fin")
+                            t.f.renameTo(File(t.f.parentFile, "fallo_" + t.f.name))
+                            estado = "ERROR al subir ${t.f.name}: revisá token, chat id o tamaño"
+                            notificar(estado)
+                        } else {
+                            t.f.renameTo(File(t.f.parentFile, "ok_" + t.f.name))
+                        }
                         subiendoAhora = ""
                         pendientesN = pendientes()
-                        if (!finalizando) {
-                            estado = "grabando (parte $parte)"
-                        } else {
-                            val resta = pendientes()
-                            estado = if (resta > 0) "subiendo lo pendiente ($resta restante(s))..."
-                                     else "última parte enviada, avisando a la PC..."
-                            notificar(estado)
+                        if (!permanente) {
+                            if (!finalizando) {
+                                estado = "grabando (parte $parte)"
+                            } else {
+                                val resta = pendientes()
+                                estado = if (resta > 0) "subiendo lo pendiente ($resta restante(s))..."
+                                         else "última parte enviada, avisando a la PC..."
+                                notificar(estado)
+                            }
                         }
                     }
                     is Trabajo.Texto -> {
                         var intento = 0
-                        while (!TelegramApi.sendMessage(token, chat, t.t)) {
+                        while (true) {
+                            val code = TelegramApi.sendMessage(token, chat, t.t)
+                            if (code == 200 || esPermanente(code)) break
                             intento++
                             Thread.sleep(if (intento > 12) 60_000L else 5_000L * intento)
                         }
@@ -339,12 +409,14 @@ class RecordService : Service() {
                     }
                 }
             }
-        }.apply { isDaemon = true }.start()
+        }.apply { isDaemon = true }
+        uploader!!.start()
     }
 
     private fun terminarServicio() {
         estado = "listo: todo enviado, la PC está procesando"
         corriendo = false
+        uploaderActivo = false
         Prefs.limpiarSesion(this)
         mediaSession?.release()
         mediaSession = null
@@ -407,6 +479,8 @@ class RecordService : Service() {
     override fun onDestroy() {
         handler.removeCallbacks(corteAuto)
         handler.removeCallbacks(esperaSilencio)
+        uploaderActivo = false        // frenar el hilo de subidas (evita hilos huérfanos)
+        uploader?.interrupt()
         pararSegmento()
         mediaSession?.release()
         mediaSession = null

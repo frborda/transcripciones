@@ -15,6 +15,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import util
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -23,6 +26,10 @@ def main() -> int:
     ap.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"],
                     help="Dispositivo: auto (GPU si hay), cuda o cpu. Def: auto")
     ap.add_argument("--token-file", default=".hf_token")
+    ap.add_argument("--hablantes", type=int, default=None,
+                    help="Cantidad exacta de hablantes, si se conoce (mejora mucho la separación)")
+    ap.add_argument("--min-hablantes", type=int, default=None, help="Mínimo de hablantes")
+    ap.add_argument("--max-hablantes", type=int, default=None, help="Máximo de hablantes")
     args = ap.parse_args()
 
     # limitar hilos ANTES de importar torch para no competir con la transcripción
@@ -66,8 +73,21 @@ def main() -> int:
         data = data.T                   # (canales, n)
     waveform = torch.from_numpy(data)
 
+    # pista de cantidad de hablantes (si se conoce): mejora mucho la separación,
+    # sobre todo en reuniones con varias personas y voces parecidas.
+    kw = {}
+    if args.hablantes:
+        kw["num_speakers"] = args.hablantes
+    else:
+        if args.min_hablantes:
+            kw["min_speakers"] = args.min_hablantes
+        if args.max_hablantes:
+            kw["max_speakers"] = args.max_hablantes
+    if kw:
+        print(f"Pista de hablantes: {kw}", flush=True)
+
     print("Ejecutando diarización (esto tarda en CPU)...", flush=True)
-    output = pipeline({"waveform": waveform, "sample_rate": sr})
+    output = pipeline({"waveform": waveform, "sample_rate": sr}, **kw)
 
     # pyannote.audio 4.x devuelve DiarizeOutput; usamos la versión exclusiva (sin
     # solapamientos) que es la recomendada para mapear contra una transcripción.
@@ -81,7 +101,7 @@ def main() -> int:
     turnos.sort(key=lambda t: t["inicio"])
 
     out = wav.with_name(wav.stem + "_turnos.json")
-    out.write_text(json.dumps(turnos, ensure_ascii=False, indent=2), encoding="utf-8")
+    util.escribir_json(out, turnos, indent=2)
 
     hablantes = sorted({t["hablante"] for t in turnos})
     print(f"\nListo: {len(turnos)} turnos, {len(hablantes)} hablantes detectados: {hablantes}")

@@ -21,14 +21,21 @@ RAIZ = Path(__file__).resolve().parent
 ROOT = RAIZ.parent
 JOBS = ROOT / "incoming" / "tg" / "diar_jobs"
 
+sys.path.insert(0, str(RAIZ))
+import util
+
 
 def main() -> int:
     # instancia única: si ya hay un servicio corriendo, salir (evita duplicar el
     # modelo en RAM y carreras sobre la carpeta de pedidos al reiniciar el watcher).
+    # use_last_error=True + get_last_error() es la forma confiable de leer
+    # ERROR_ALREADY_EXISTS (windll.GetLastError puede quedar pisado entre llamadas).
+    _mutex = None
     try:
         import ctypes
-        ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\grabador_diar_service")
-        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        _mutex = k32.CreateMutexW(None, False, "Global\\grabador_diar_service")
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
             print("[diar] ya hay una instancia corriendo; salgo.", flush=True)
             return 0
     except Exception:
@@ -81,22 +88,36 @@ def main() -> int:
             turnos.append({"inicio": float(turn.start), "fin": float(turn.end), "hablante": speaker})
         turnos.sort(key=lambda t: t["inicio"])
         out = wav_path.with_name(wav_path.stem + "_turnos.json")
-        out.write_text(json.dumps(turnos, ensure_ascii=False, indent=2), encoding="utf-8")
+        # atómico: la sesión headless pollea por EXISTENCIA de este archivo; no debe
+        # llegar a leer un JSON a medio escribir.
+        util.escribir_json(out, turnos, indent=2)
         print(f"[diar] {wav_path.name}: {len(turnos)} turnos -> {out.name}", flush=True)
 
     while True:
         for jf in sorted(JOBS.glob("*.json")):
             try:
-                wav = Path(json.loads(jf.read_text(encoding="utf-8"))["wav"])
-                if wav.exists():
-                    print(f"[diar] procesando {wav.name}...", flush=True)
-                    diarizar(wav)
-                jf.rename(jf.with_suffix(".done"))
+                datos = json.loads(jf.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                # JSON a medio escribir (no debería pasar si el productor escribe
+                # atómico): reintentar en el próximo ciclo; si es viejo, está corrupto.
+                try:
+                    if time.time() - jf.stat().st_mtime > 5:
+                        os.replace(jf, jf.with_suffix(".err"))
+                except OSError:
+                    pass
+                continue
+            try:
+                wav = Path(datos["wav"])
+                if not wav.exists():
+                    raise FileNotFoundError(f"no existe el wav {wav}")
+                print(f"[diar] procesando {wav.name}...", flush=True)
+                diarizar(wav)
+                os.replace(jf, jf.with_suffix(".done"))  # os.replace pisa si existe
             except Exception as e:  # noqa: BLE001
                 print(f"[diar] error en {jf.name}: {e}", flush=True)
                 try:
-                    jf.rename(jf.with_suffix(".err"))
-                except Exception:
+                    os.replace(jf, jf.with_suffix(".err"))
+                except OSError:
                     pass
         time.sleep(1)
 

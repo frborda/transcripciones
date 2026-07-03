@@ -100,6 +100,9 @@ func main() {
 	}
 
 	onIniciar := func() {
+		if eng != nil && eng.running.Load() {
+			return // ya está grabando: ignorar el doble clic (WM_COMMAND encolado)
+		}
 		token := strings.TrimSpace(tokenLE.Text())
 		chat := strings.TrimSpace(chatLE.Text())
 		if token == "" || chat == "" {
@@ -230,7 +233,12 @@ func main() {
 			eng.Finish()
 		}
 	})
-	addAccion("Salir", func() { walk.App().Exit(0) })
+	addAccion("Salir", func() {
+		if eng != nil {
+			eng.Kill() // cortar ffmpeg para no dejarlo grabando huérfano tras salir
+		}
+		walk.App().Exit(0)
+	})
 
 	// cerrar (X) = ocultar a la bandeja, salvo que no haya nada en curso
 	mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {

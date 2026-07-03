@@ -40,6 +40,8 @@ def _enviar_job(job: dict, ack_timeout: int):
             err.unlink(missing_ok=True)
             return False, m
         time.sleep(0.5)
+    # timeout: borrar el job para que el watcher no lo envíe horas después (duplicado)
+    (OUTBOX / f"{jid}.json").unlink(missing_ok=True)
     return False, "timeout esperando al watcher (¿está corriendo tg_watcher?)"
 
 
@@ -58,13 +60,23 @@ def drain(chat_id) -> int:
 def wait_reply(chat_id, timeout: int) -> int:
     q = TG_DIR / f"replies_{chat_id}.jsonl"
     cur = TG_DIR / f"replies_{chat_id}.cursor"
-    consumed = int(cur.read_text()) if cur.exists() else 0
+    try:
+        consumed = int(cur.read_text()) if cur.exists() else 0
+    except (ValueError, OSError):
+        consumed = 0  # cursor corrupto/vacío: arrancar de cero en vez de morir
     fin = time.time() + timeout
     while time.time() < fin:
         if q.exists():
-            lineas = q.read_text(encoding="utf-8-sig").splitlines()
+            try:
+                lineas = q.read_text(encoding="utf-8-sig").splitlines()
+            except OSError:
+                lineas = []
             if len(lineas) > consumed:
-                msg = json.loads(lineas[consumed])
+                try:
+                    msg = json.loads(lineas[consumed])
+                except json.JSONDecodeError:
+                    time.sleep(2)   # línea a medio escribir: reintentar, no crashear
+                    continue
                 cur.write_text(str(consumed + 1))
                 print(msg.get("text", ""))
                 return 0

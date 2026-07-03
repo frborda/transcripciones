@@ -94,14 +94,24 @@ type segmento struct {
 	loopDone chan struct{}
 	exited   chan struct{}      // se cierra cuando ffmpeg termina
 	silencio chan struct{}      // emite en cada inicio de silencio detectado
+	fault    chan struct{}      // emite si la captura de escritorio (WASAPI) se cae
 	waitErr  error
 	stopOnce sync.Once
+}
+
+// marcarFallo avisa (sin bloquear) que la captura loopback se cortó por un error de
+// dispositivo, para que el engine recorte el segmento y reinicie la captura.
+func (s *segmento) marcarFallo() {
+	select {
+	case s.fault <- struct{}{}:
+	default:
+	}
 }
 
 // iniciarSegmento arranca la captura del segmento según el modo.
 func iniciarSegmento(modo, micAlt, ruta string, maxSeg int) (*segmento, error) {
 	s := &segmento{modo: modo, stopLoop: make(chan struct{}), loopDone: make(chan struct{}),
-		silencio: make(chan struct{}, 1)}
+		silencio: make(chan struct{}, 1), fault: make(chan struct{}, 1)}
 
 	var args []string
 	// loglevel info (no error) para que silencedetect emita sus mensajes; -nostats
@@ -188,7 +198,17 @@ func (s *segmento) scanSilencio(r io.Reader) {
 // feedLoopback captura el audio del escritorio (WASAPI loopback) y lo escribe como
 // PCM crudo al stdin de ffmpeg, hasta que se pide detener.
 func (s *segmento) feedLoopback(w io.Writer) {
-	defer close(s.loopDone)
+	// Cualquier salida que NO sea un cierre limpio (stopLoop) ni el fin normal de
+	// ffmpeg se trata como fallo de dispositivo: antes se volvía en silencio y el
+	// resto del segmento quedaba mudo sin aviso. Ahora se avisa al engine para que
+	// recorte y reinicie la captura (el dispositivo por defecto pudo cambiar).
+	limpio := false
+	defer func() {
+		close(s.loopDone)
+		if !limpio {
+			s.marcarFallo()
+		}
+	}()
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED) != nil {
@@ -232,6 +252,7 @@ func (s *segmento) feedLoopback(w io.Writer) {
 	for {
 		select {
 		case <-s.stopLoop:
+			limpio = true // cierre pedido por cerrar(): salida normal, no es fallo
 			return
 		default:
 		}
@@ -249,6 +270,9 @@ func (s *segmento) feedLoopback(w io.Writer) {
 			if data != nil && n > 0 {
 				b := unsafe.Slice(data, n)
 				if _, err := w.Write(b); err != nil {
+					// ffmpeg cerró su stdin (corte normal o tope -t): no es fallo de
+					// dispositivo, no reiniciar la captura por esto.
+					limpio = true
 					acc.ReleaseBuffer(frames)
 					return
 				}

@@ -9,6 +9,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import util
+
 
 def main() -> int:
     if len(sys.argv) < 3:
@@ -29,8 +32,9 @@ def main() -> int:
         k, v = par.split("=", 1)
         mapa[k.strip()] = v.strip()
 
-    # ordenar por número descendente para no romper 'Hablante 1' vs 'Hablante 10'
-    etiquetas = sorted(mapa, key=lambda e: -int(re.search(r"\d+", e).group()))
+    # ordenar por longitud descendente: evita que "Hablante 1" pise dentro de
+    # "Hablante 10" y funciona con etiquetas sin dígitos ("Coordinador=Juan").
+    etiquetas = sorted(mapa, key=len, reverse=True)
 
     def reemplazar(texto: str) -> str:
         for etq in etiquetas:
@@ -43,7 +47,9 @@ def main() -> int:
         objetivos.append(srt)
 
     for f in objetivos:
-        f.write_text(reemplazar(f.read_text(encoding="utf-8")), encoding="utf-8")
+        # atómico: no perder el transcript corregido (horas de GPU + 2 pasadas) si
+        # se corta a mitad de escritura.
+        util.escribir_texto(f, reemplazar(f.read_text(encoding="utf-8")))
         print(f"Actualizado: {f}")
 
     print("Nombres aplicados: " + ", ".join(f"{k} -> {v}" for k, v in mapa.items()))

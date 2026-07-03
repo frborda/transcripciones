@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -15,6 +16,26 @@ import (
 )
 
 // Cliente mínimo de la Bot API de Telegram (solo stdlib).
+
+// tgError lleva el código HTTP de la respuesta de Telegram para poder distinguir
+// un error permanente (token/chat/archivo) de uno transitorio (red, rate limit).
+type tgError struct {
+	code int
+	msg  string
+}
+
+func (e *tgError) Error() string { return fmt.Sprintf("%d: %s", e.code, e.msg) }
+
+// esPermanente: los 4xx (salvo 429 rate-limit) no se arreglan reintentando —
+// 401 token inválido, 400 chat_id malo, 413 archivo demasiado grande. Reintentar
+// eternamente solo bloquea la cola y el "fin" nunca sale.
+func esPermanente(err error) bool {
+	var te *tgError
+	if errors.As(err, &te) {
+		return te.code >= 400 && te.code < 500 && te.code != 429
+	}
+	return false
+}
 
 func tgURL(token, metodo string) string {
 	return "https://api.telegram.org/bot" + token + "/" + metodo
@@ -32,7 +53,7 @@ func sendMessage(token, chatID, texto string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("sendMessage %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return &tgError{resp.StatusCode, "sendMessage: " + strings.TrimSpace(string(b))}
 	}
 	return nil
 }
@@ -63,7 +84,9 @@ func sendDocument(token, chatID, ruta string) error {
 		e = mw.Close()
 	}()
 
-	cl := &http.Client{Timeout: 10 * time.Minute}
+	// Timeout total generoso: una parte tope (~30 MB) por un enlace lento tarda varios
+	// minutos; 10 min cortaba subidas válidas a medio camino.
+	cl := &http.Client{Timeout: 30 * time.Minute}
 	req, err := http.NewRequest("POST", tgURL(token, "sendDocument"), pr)
 	if err != nil {
 		return err
@@ -76,7 +99,7 @@ func sendDocument(token, chatID, ruta string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("sendDocument %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return &tgError{resp.StatusCode, "sendDocument: " + strings.TrimSpace(string(b))}
 	}
 	return nil
 }
@@ -104,21 +127,28 @@ func getMe(token string) (string, error) {
 	return r.Result.Username, nil
 }
 
-// reintentos con backoff: nunca devuelve hasta lograrlo (mantiene la secuencia).
-func conReintento(desc string, fn func() error) {
+// conReintento reintenta con backoff ante fallos transitorios (red, 5xx, 429) y
+// devuelve true al lograrlo. Ante un error PERMANENTE (token/chat/tamaño) no insiste:
+// deja el motivo real en el estado y devuelve false, para que la cola no quede
+// bloqueada y el "fin" pueda salir igual.
+func conReintento(desc string, fn func() error) bool {
 	intento := 0
 	for {
-		if err := fn(); err == nil {
-			return
-		} else {
-			intento++
-			estadoTxt = fmt.Sprintf("sin conexión, reintento %d (%s)", intento, desc)
-			espera := time.Duration(intento) * 5 * time.Second
-			if espera > 60*time.Second {
-				espera = 60 * time.Second
-			}
-			time.Sleep(espera)
+		err := fn()
+		if err == nil {
+			return true
 		}
+		if esPermanente(err) {
+			estadoTxt = fmt.Sprintf("ERROR %s: %v — revisá token, chat id o tamaño del archivo", desc, err)
+			return false
+		}
+		intento++
+		estadoTxt = fmt.Sprintf("sin conexión, reintento %d (%s)", intento, desc)
+		espera := time.Duration(intento) * 5 * time.Second
+		if espera > 60*time.Second {
+			espera = 60 * time.Second
+		}
+		time.Sleep(espera)
 	}
 }
 

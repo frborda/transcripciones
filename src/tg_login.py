@@ -14,7 +14,7 @@ from telethon import TelegramClient
 
 RAIZ = Path(__file__).resolve().parent
 ROOT = RAIZ.parent
-cfg = json.loads((ROOT / ".tg_config.json").read_text(encoding="utf-8"))
+cfg = json.loads((ROOT / ".tg_config.json").read_text(encoding="utf-8-sig"))
 
 
 async def main():

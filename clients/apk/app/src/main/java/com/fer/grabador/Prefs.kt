@@ -44,7 +44,15 @@ object Prefs {
     fun marcarSesion(c: Context, sesion: String, parte: Int) {
         sp(c).edit().putString("sesion_activa", sesion).putInt("parte_actual", parte).apply()
     }
-    fun limpiarSesion(c: Context) = marcarSesion(c, "", 0)
+    fun limpiarSesion(c: Context) =
+        sp(c).edit().putString("sesion_activa", "").putInt("parte_actual", 0)
+            .putBoolean("finalizando", false).apply()
+
+    // "finalizando" persistido: si la app muere DESPUÉS de tocar Finalizar, al
+    // reiniciar NO se graba más — solo se reenvía lo pendiente y se manda "fin".
+    fun marcarFinalizando(c: Context, v: Boolean) =
+        sp(c).edit().putBoolean("finalizando", v).apply()
+    fun estaFinalizando(c: Context): Boolean = sp(c).getBoolean("finalizando", false)
 
     private fun sp(c: Context) = c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
 }

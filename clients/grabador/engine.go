@@ -37,6 +37,7 @@ type Engine struct {
 	estado   string
 	segIni   time.Time
 	totalIni time.Time
+	segAct   *segmento // captura en curso (para poder matarla al salir)
 
 	onFinal func() // se llama cuando terminó de subir todo (tras "fin")
 }
@@ -53,6 +54,21 @@ func NewEngine(cfg Config, micAlt string) *Engine {
 }
 
 func (e *Engine) setEstado(s string) { e.mu.Lock(); e.estado = s; e.mu.Unlock(); estadoTxt = s }
+
+// getEstado lee el estado bajo el mismo mutex que lo escribe (evita la carrera de
+// datos al leerlo desde la goroutine del uploader).
+func (e *Engine) getEstado() string { e.mu.Lock(); defer e.mu.Unlock(); return e.estado }
+
+// Kill corta YA la captura en curso (mata ffmpeg) para "Salir" sin dejar un
+// proceso grabando huérfano. No sube lo pendiente.
+func (e *Engine) Kill() {
+	e.mu.Lock()
+	seg := e.segAct
+	e.mu.Unlock()
+	if seg != nil && seg.cmd != nil && seg.cmd.Process != nil {
+		_ = seg.cmd.Process.Kill()
+	}
+}
 
 type Snap struct {
 	Running          bool
@@ -140,10 +156,22 @@ func (e *Engine) recordLoop() {
 
 		seg, err := iniciarSegmento(e.cfg.Fuente, e.micAlt, ruta, segMax)
 		if err != nil {
-			e.setEstado("ERROR captura: " + err.Error())
-			time.Sleep(2 * time.Second)
-			continue
+			// mic ocupado/desconectado: reintentar, pero sin quedar sordos a Finalizar
+			// (antes el usuario no podía cerrar la sesión mientras fallaba la captura).
+			e.setEstado("ERROR captura (reintentando): " + err.Error())
+			select {
+			case <-time.After(2 * time.Second):
+				parte-- // el intento fallido no consume número de parte
+				continue
+			case <-e.finishCh:
+				e.jobs <- job{kind: "text", text: "fin"}
+				e.jobs <- job{kind: "fin"}
+				return
+			}
 		}
+		e.mu.Lock()
+		e.segAct = seg
+		e.mu.Unlock()
 		e.setEstado(fmt.Sprintf("grabando parte %d", parte))
 
 		// auto: a los 'intervalo' segundos se "arma" y corta en el primer silencio
@@ -153,11 +181,15 @@ func (e *Engine) recordLoop() {
 		}
 		var topeCh <-chan time.Time
 		armado := false
+		falloCaptura := false
 
 	espera:
 		for {
 			select {
 			case <-seg.exited: // tope -t
+				break espera
+			case <-seg.fault: // la captura de escritorio (WASAPI) se cayó
+				falloCaptura = true
 				break espera
 			case <-armarCh:
 				armado = true
@@ -178,6 +210,9 @@ func (e *Engine) recordLoop() {
 			}
 		}
 		seg.cerrar()
+		e.mu.Lock()
+		e.segAct = nil
+		e.mu.Unlock()
 
 		if archivoOK(ruta) {
 			e.pend.Add(1)
@@ -188,6 +223,12 @@ func (e *Engine) recordLoop() {
 			e.jobs <- job{kind: "fin"}
 			return
 		}
+		if falloCaptura {
+			// el próximo segmento reinicializa WASAPI con el dispositivo actual; un
+			// respiro corto evita martillar si el dispositivo desapareció de verdad.
+			e.setEstado("reiniciando captura de escritorio (cambió el dispositivo de audio)")
+			time.Sleep(time.Second)
+		}
 	}
 }
 
@@ -195,15 +236,20 @@ func (e *Engine) uploader() {
 	for j := range e.jobs {
 		switch j.kind {
 		case "audio":
-			conReintento(filepath.Base(j.path), func() error {
+			if conReintento(filepath.Base(j.path), func() error {
 				return sendDocument(e.cfg.BotToken, e.cfg.ChatID, j.path)
-			})
-			_ = os.Rename(j.path, filepath.Join(filepath.Dir(j.path), "ok_"+filepath.Base(j.path)))
-			e.pend.Add(-1)
-			e.env.Add(1)
-			if !strings.HasPrefix(e.estado, "grabando") {
-				e.setEstado("subiendo lo pendiente...")
+			}) {
+				_ = os.Rename(j.path, filepath.Join(filepath.Dir(j.path), "ok_"+filepath.Base(j.path)))
+				e.env.Add(1)
+				if !strings.HasPrefix(e.getEstado(), "grabando") {
+					e.setEstado("subiendo lo pendiente...")
+				}
+			} else {
+				// error permanente (token/chat/tamaño): apartar el archivo y seguir la
+				// cola para no bloquear el "fin"; el estado ya muestra el motivo.
+				_ = os.Rename(j.path, filepath.Join(filepath.Dir(j.path), "fallo_"+filepath.Base(j.path)))
 			}
+			e.pend.Add(-1)
 		case "text":
 			conReintento("texto "+j.text, func() error {
 				return sendMessage(e.cfg.BotToken, e.cfg.ChatID, j.text)

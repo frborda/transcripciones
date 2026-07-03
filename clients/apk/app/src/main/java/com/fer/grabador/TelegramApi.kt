@@ -13,7 +13,10 @@ object TelegramApi {
     private fun api(token: String, metodo: String) =
         URL("https://api.telegram.org/bot$token/$metodo")
 
-    fun sendMessage(token: String, chatId: String, texto: String): Boolean {
+    /** Código HTTP de la respuesta (200 = OK), o -1 si falló la red/conexión.
+     *  Devolver el código deja que el llamador distinga un error permanente
+     *  (4xx: token/chat/tamaño) de uno transitorio (red, 5xx, 429). */
+    fun sendMessage(token: String, chatId: String, texto: String): Int {
         val con = api(token, "sendMessage").openConnection() as HttpURLConnection
         return try {
             con.requestMethod = "POST"
@@ -24,15 +27,15 @@ object TelegramApi {
             val body = "chat_id=" + URLEncoder.encode(chatId, "UTF-8") +
                     "&text=" + URLEncoder.encode(texto, "UTF-8")
             con.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            con.responseCode == 200
+            con.responseCode
         } catch (e: Exception) {
-            false
+            -1
         } finally {
             con.disconnect()
         }
     }
 
-    fun sendDocument(token: String, chatId: String, archivo: File): Boolean {
+    fun sendDocument(token: String, chatId: String, archivo: File): Int {
         val boundary = "----grabador" + System.currentTimeMillis()
         val con = api(token, "sendDocument").openConnection() as HttpURLConnection
         return try {
@@ -52,9 +55,9 @@ object TelegramApi {
                 archivo.inputStream().use { it.copyTo(out, 64 * 1024) }
                 out.writeBytes("\r\n--$boundary--\r\n")
             }
-            con.responseCode == 200
+            con.responseCode
         } catch (e: Exception) {
-            false
+            -1
         } finally {
             con.disconnect()
         }
