@@ -44,6 +44,9 @@ def main() -> int:
     p.add_argument("--idioma", default="es", help="Idioma (es, en, ...) o 'auto'. Def: es")
     p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"],
                    help="Dispositivo: auto (GPU si hay), cuda o cpu. Def: auto")
+    p.add_argument("--glosario", default=None,
+                   help="Archivo de términos del dominio (uno por línea) para sesgar el "
+                        "decodificado (hotwords). Def: glosario.txt en la raíz del repo, si existe")
     args = p.parse_args()
 
     audio = Path(args.audio)
@@ -52,6 +55,24 @@ def main() -> int:
         return 1
 
     idioma = None if args.idioma == "auto" else args.idioma
+
+    # Glosario del dominio -> hotwords: sesga el decodificado hacia los términos
+    # que el ASR suele errar (siglas, jerga). Con condition_on_previous_text=False
+    # las hotwords aplican a CADA ventana, justo lo que necesitamos.
+    glosario = Path(args.glosario) if args.glosario else Path(__file__).resolve().parent.parent / "glosario.txt"
+    hotwords = None
+    if glosario.exists():
+        terminos = [t.strip() for t in glosario.read_text(encoding="utf-8-sig").splitlines()
+                    if t.strip() and not t.strip().startswith("#")]
+        if terminos:
+            hotwords = ", ".join(terminos)
+            print(f"Glosario: {len(terminos)} términos de {glosario.name}", flush=True)
+            # el prompt de whisper admite ~224 tokens y las hotwords viven ahí:
+            # un glosario gigante diluye el sesgo y termina recortado. ~900 chars
+            # ≈ 200+ tokens en español: avisar para que se pode antes de crecer más.
+            if len(hotwords) > 900:
+                print(f"AVISO: glosario muy largo ({len(hotwords)} chars); whisper puede "
+                      "recortarlo. Conviene podar términos que ya no falle.", file=sys.stderr)
 
     # selección de dispositivo: GPU (float16) si está disponible, si no CPU (int8)
     device = args.device
@@ -85,6 +106,8 @@ def main() -> int:
         condition_on_previous_text=False,
         # descarta texto "inventado" dentro de silencios largos
         hallucination_silence_threshold=2.0,
+        # términos del dominio (glosario.txt): reduce errores tipo "cuervo" por "QR"
+        hotwords=hotwords,
     )
     print(f"Idioma detectado: {info.language} (prob {info.language_probability:.2f})", flush=True)
 

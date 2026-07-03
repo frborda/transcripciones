@@ -3,21 +3,23 @@ package com.fer.grabador
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.view.View
 import android.widget.Button
-import android.widget.CheckBox
+import android.widget.CompoundButton
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.File
 
 class MainActivity : AppCompatActivity() {
@@ -25,23 +27,39 @@ class MainActivity : AppCompatActivity() {
     private lateinit var etToken: EditText
     private lateinit var etChat: EditText
     private lateinit var etIntervalo: EditText
-    private lateinit var cbAuto: CheckBox
+    private lateinit var cbAuto: CompoundButton
     private lateinit var tvEstado: TextView
     private lateinit var tvTimer: TextView
     private lateinit var tvPartes: TextView
+    private lateinit var dotEstado: View
 
     private val handler = Handler(Looper.getMainLooper())
     private val refresco = object : Runnable {
         override fun run() {
-            tvEstado.text = RecordService.estado
-            tvTimer.text = if (RecordService.corriendo) {
+            val est = RecordService.estado
+            tvEstado.text = est
+            if (RecordService.corriendo) {
                 val ahora = System.currentTimeMillis()
-                "⏱ parte ${fmtSeg((ahora - RecordService.tParte) / 1000)}" +
-                        " · total ${fmtSeg((ahora - RecordService.tTotal) / 1000)}"
-            } else ""
+                tvTimer.text = "parte ${fmtSeg((ahora - RecordService.tParte) / 1000)}" +
+                        "  ·  total ${fmtSeg((ahora - RecordService.tTotal) / 1000)}"
+                tvTimer.visibility = View.VISIBLE
+            } else {
+                tvTimer.visibility = View.GONE
+            }
+            dotEstado.backgroundTintList = ColorStateList.valueOf(
+                ContextCompat.getColor(this@MainActivity, colorEstado(est)))
             tvPartes.text = listaPartes()
             handler.postDelayed(this, 1000)
         }
+    }
+
+    /** Color del indicador según el estado del servicio. */
+    private fun colorEstado(est: String): Int = when {
+        est.startsWith("ERROR") || est.startsWith("sin conexión") -> R.color.dot_err
+        RecordService.corriendo && est.startsWith("grabando") -> R.color.dot_rec
+        est.contains("subiendo") || est.contains("enviada") || est.contains("avisando") -> R.color.dot_up
+        est.startsWith("listo") -> R.color.dot_done
+        else -> R.color.dot_idle
     }
 
     private fun fmtSeg(s: Long): String =
@@ -85,6 +103,7 @@ class MainActivity : AppCompatActivity() {
         tvEstado = findViewById(R.id.tvEstado)
         tvTimer = findViewById(R.id.tvTimer)
         tvPartes = findViewById(R.id.tvPartes)
+        dotEstado = findViewById(R.id.dotEstado)
 
         etToken.setText(Prefs.token(this))
         etChat.setText(Prefs.chatId(this))
@@ -115,7 +134,7 @@ class MainActivity : AppCompatActivity() {
             toast("No hay grabación en curso")
             return
         }
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle("¿Finalizar y procesar?")
             .setMessage("Se corta la grabación, se sube lo que falte y la PC genera y envía los PDFs. No se puede deshacer.")
             .setPositiveButton("Finalizar") { _, _ -> servicio(RecordService.ACTION_FINISH) }

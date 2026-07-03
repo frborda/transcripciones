@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Marca -->
+    <color name="brand">#6366F1</color>
+    <color name="brand_dark">#4F46E5</color>
+    <color name="on_brand">#FFFFFF</color>
+
+    <!-- Acciones semánticas -->
+    <color name="rec_green">#16A34A</color>
+    <color name="cut_blue">#2563EB</color>
+    <color name="fin_red">#DC2626</color>
+    <color name="on_action">#FFFFFF</color>
+
+    <!-- Indicadores de estado -->
+    <color name="dot_idle">#9CA3AF</color>
+    <color name="dot_rec">#EF4444</color>
+    <color name="dot_up">#3B82F6</color>
+    <color name="dot_done">#22C55E</color>
+    <color name="dot_err">#F59E0B</color>
+</resources>
