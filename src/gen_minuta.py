@@ -9,24 +9,38 @@ este script solo lo maqueta. Soporta:
   '---'  regla horizontal
   párrafos normales
 
+Opciones de presentación:
+  --indice   agrega un índice clickeable (con número de página) con las
+             secciones '##' después del título, en su propia página.
+
+Detalles automáticos: pie de página con número, encabezados que no quedan
+huérfanos al pie de página, texto justificado, numeración 'N.N.' en negrita
+y bloques que empiezan con '**Abierto:**' destacados en gris.
+
 Uso:
     python gen_minuta.py Minuta.md --out Minuta.pdf --titulo "Minuta - ..."
+    python gen_minuta.py Definiciones.md --indice --titulo "Definiciones - ..."
 """
 import argparse
 import re
 from pathlib import Path
 
+from reportlab.lib.enums import TA_JUSTIFY
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, HRFlowable, ListFlowable, ListItem,
+    PageBreak,
 )
+from reportlab.platypus.tableofcontents import TableOfContents
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 AZUL = colors.HexColor("#1565C0")
+AZUL_BANDA = colors.HexColor("#EAF1FB")
 GRIS = colors.HexColor("#555555")
 GRIS_CLARO = colors.HexColor("#CCCCCC")
+GRIS_FONDO = colors.HexColor("#F4F4F4")
 
 
 def inline(t: str) -> str:
@@ -36,6 +50,22 @@ def inline(t: str) -> str:
     return t
 
 
+def sin_tags(t: str) -> str:
+    return re.sub(r"<[^>]+>", "", t)
+
+
+class DocConIndice(SimpleDocTemplate):
+    """Notifica al índice cada encabezado marcado y le pone marcador clickeable."""
+
+    def afterFlowable(self, flowable):
+        toc = getattr(flowable, "_toc", None)
+        if toc is not None:
+            nivel, texto, clave = toc
+            self.canv.bookmarkPage(clave)
+            self.canv.addOutlineEntry(texto, clave, level=nivel, closed=False)
+            self.notify("TOCEntry", (nivel, texto, self.page, clave))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("md")
@@ -43,6 +73,8 @@ def main() -> int:
     ap.add_argument("--titulo", default=None)
     ap.add_argument("--formato", default="desktop", choices=["desktop", "celu"],
                     help="desktop (A4) o celu (página angosta, letra grande)")
+    ap.add_argument("--indice", action="store_true",
+                    help="Índice clickeable con las secciones '##' tras el título")
     args = ap.parse_args()
 
     src = Path(args.md)
@@ -63,21 +95,38 @@ def main() -> int:
     ss = getSampleStyleSheet()
     st_title = ParagraphStyle("t", parent=ss["Title"], fontSize=fs_t, leading=fs_t + 4,
                               textColor=AZUL, spaceAfter=4)
+    # sección con banda de color: se ve pareja y separa bien los bloques
     st_h2 = ParagraphStyle("h2", parent=ss["Heading2"], fontSize=fs_h2, leading=fs_h2 + 4,
-                           textColor=AZUL, spaceBefore=12, spaceAfter=4)
+                           textColor=AZUL, spaceBefore=14, spaceAfter=6,
+                           backColor=AZUL_BANDA, borderPadding=(4, 6, 4, 6),
+                           keepWithNext=1)
     st_h3 = ParagraphStyle("h3", parent=ss["Heading3"], fontSize=fs_h3, leading=fs_h3 + 4,
-                           textColor=GRIS, spaceBefore=8, spaceAfter=2)
-    st_p = ParagraphStyle("p", parent=ss["Normal"], fontSize=fs_p, leading=fs_p + 5, spaceAfter=4)
+                           textColor=GRIS, spaceBefore=8, spaceAfter=2, keepWithNext=1)
+    st_p = ParagraphStyle("p", parent=ss["Normal"], fontSize=fs_p, leading=fs_p + 5,
+                          spaceAfter=5, alignment=TA_JUSTIFY)
     st_li = ParagraphStyle("li", parent=st_p, spaceAfter=2)
+    st_abierto = ParagraphStyle("ab", parent=st_p, textColor=GRIS,
+                                backColor=GRIS_FONDO, borderPadding=(3, 5, 3, 5),
+                                spaceBefore=2, spaceAfter=8)
+    st_toc_tit = ParagraphStyle("tt", parent=st_h2, spaceBefore=8)
+    st_toc = ParagraphStyle("toc", parent=ss["Normal"], fontSize=fs_p, leading=fs_p + 7)
 
-    doc = SimpleDocTemplate(
+    doc = DocConIndice(
         str(out), pagesize=pagesize,
         leftMargin=margen, rightMargin=margen, topMargin=margen, bottomMargin=margen,
-        title=args.titulo or src.stem, author="Minuta generada por Claude Code",
+        title=args.titulo or src.stem, author="Generado por Claude Code",
     )
+
+    def pie(canv, _doc):
+        canv.saveState()
+        canv.setFont("Helvetica", 8)
+        canv.setFillColor(GRIS)
+        canv.drawCentredString(pagesize[0] / 2, margen * 0.4, f"— {canv.getPageNumber()} —")
+        canv.restoreState()
 
     flow = []
     items, tipo = [], None  # acumulador de lista
+    n_secciones = 0
 
     def flush():
         nonlocal items, tipo
@@ -97,11 +146,25 @@ def main() -> int:
         if s.startswith("### "):
             flush(); flow.append(Paragraph(inline(s[4:]), st_h3)); continue
         if s.startswith("## "):
-            flush(); flow.append(Paragraph(inline(s[3:]), st_h2)); continue
+            flush()
+            p = Paragraph(inline(s[3:]), st_h2)
+            if args.indice:
+                n_secciones += 1
+                p._toc = (0, sin_tags(inline(s[3:])), f"sec{n_secciones}")
+            flow.append(p)
+            continue
         if s.startswith("# "):
             flush()
             flow.append(Paragraph(inline(s[2:]), st_title))
             flow.append(HRFlowable(width="100%", thickness=1, color=AZUL, spaceAfter=6))
+            if args.indice:
+                flow.append(Spacer(1, 8))
+                flow.append(Paragraph("Índice", st_toc_tit))
+                toc = TableOfContents()
+                toc.levelStyles = [st_toc]
+                toc.dotsMinLevel = 0
+                flow.append(toc)
+                flow.append(PageBreak())
             continue
         if s in ("---", "***", "___"):
             flush()
@@ -123,10 +186,18 @@ def main() -> int:
             items.append(inline(m.group(1)))
             continue
         flush()
+        if s.startswith("**Abierto"):
+            flow.append(Paragraph(inline(s), st_abierto))
+            continue
+        # numeración de definiciones "N.N." al inicio del párrafo, en negrita
+        s = re.sub(r"^(\d+\.\d+\.)\s", r"**\1** ", s)
         flow.append(Paragraph(inline(s), st_p))
 
     flush()
-    doc.build(flow)
+    if args.indice:
+        doc.multiBuild(flow, onFirstPage=pie, onLaterPages=pie)
+    else:
+        doc.build(flow, onFirstPage=pie, onLaterPages=pie)
     print(f"Minuta generada: {out}  ({out.stat().st_size // 1024} KB)")
     return 0
 
