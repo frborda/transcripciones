@@ -17,6 +17,54 @@ chat y te llegan los PDFs) o **manualmente** desde la consola.
 
 ---
 
+## Instalación asistida con Claude Code (recomendada)
+
+Todo lo de las secciones 1 a 3 lo puede hacer **Claude Code solo**, guiándote únicamente
+en los pasos que requieren credenciales tuyas. Necesitás tener instalado
+[Claude Code](https://claude.com/claude-code) y `git`.
+
+```powershell
+git clone <URL-del-repo> trascripciones
+cd trascripciones
+claude
+```
+
+Y pegale este prompt:
+
+```text
+Instalá y configurá este proyecto de punta a punta siguiendo el README:
+
+1. Verificá los requisitos (Windows + PowerShell 5.1, Python, GPU NVIDIA con
+   nvidia-smi, ffmpeg en el PATH) y decime qué falta antes de seguir.
+2. Creá el venv en %USERPROFILE%\venv, instalá PyTorch cu128 (torch 2.8.0,
+   torchvision 0.23.0, torchaudio 2.8.0) desde el índice de PyTorch y después
+   requirements.txt. Si no hay GPU, instalá la variante CPU y avisame.
+3. Verificá la instalación: importá torch (mostrá torch.cuda.is_available()),
+   faster_whisper, pyannote.audio y reportlab, y probá ffmpeg y ffprobe.
+4. Configurá el token de Hugging Face: pedime el token (creado en
+   https://huggingface.co/settings/tokens), guardalo en .hf_token, y recordame
+   aceptar las condiciones de pyannote/speaker-diarization-community-1 y
+   pyannote/segmentation-3.0 en Hugging Face.
+5. Configurá Telegram: pedime api_id y api_hash (de https://my.telegram.org) y
+   el chat a escuchar, armá .tg_config.json, y corré python src\tg_login.py
+   avisándome que me va a llegar un código por Telegram (corrélo con
+   ! src\tg_login.py si necesita entrada interactiva).
+6. Hacé una prueba de humo: transcribí un audio corto con el modelo tiny
+   (src\transcribir.py <audio> --modelo tiny) y verificá que salgan el .srt,
+   el .txt y el _palabras.json.
+7. Dejá corriendo .\bin\tg_watcher.ps1 en segundo plano y verificá en el log
+   que quedó escuchando.
+
+No inventes credenciales: pedímelas cuando haga falta. Al final, resumime qué
+quedó instalado, qué configuraste y cómo mando mi primera reunión.
+```
+
+Claude Code ejecuta cada paso, te pide las credenciales cuando toca (los logins
+interactivos los corrés vos con el prefijo `!`) y valida todo antes de dejarte el
+watcher escuchando. La instalación manual equivalente está en las secciones 1 a 3.
+
+---
+
 ## Estructura del proyecto
 
 ```
