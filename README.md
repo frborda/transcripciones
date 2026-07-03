@@ -166,13 +166,14 @@ Los scripts de Python están en `src/`; los de PowerShell (puntos de entrada), e
 | `tg.py` | I/O de Telegram para la sesión headless (`send-message` / `send-document` / `wait-reply` / `drain`). |
 | `procesar.ps1` | Crea el proyecto aislado y transcribe (se detiene para la corrección). |
 | `ejecutar.ps1` | Orquesta el pipeline (`-Hasta transcribir\|fusionar\|pdf`); valida por archivo de salida. |
-| `transcribir.py` | Transcribe con faster-whisper (large-v3), con tiempos por palabra y anti-alucinación. |
+| `transcribir.py` | Transcribe con faster-whisper (large-v3): glosario de dominio (hotwords), tiempos por palabra refinados con alineación forzada (wav2vec2) y anti-alucinación. |
 | `diarizar.py` | Diariza con pyannote (`speaker-diarization-community-1`, fallback `3.1`). |
 | `diarizar_service.py` | Servicio pre-warm: carga el modelo una vez y atiende pedidos (lo lanza el watcher). |
 | `unir_chunks.py` | Une las partes de una sesión incremental (offsets exactos por muestras). |
 | `fusionar.py` | Asigna hablante por palabra sobre el `.srt` corregido. |
 | `frases.py` | Muestra las frases más identificativas de cada hablante. |
-| `renombrar.py` | Aplica los nombres reales a los hablantes. |
+| `identificar.py` | Reconoce a los hablantes por su VOZ contra la banca local `voces.json` (una vez enrolados, las reuniones siguientes salen con nombre real solas). |
+| `renombrar.py` | Aplica los nombres reales a los hablantes (y actualiza la banca de voces). |
 | `gen_pdf.py` | PDF de la conversación por hablante. |
 | `gen_minuta.py` | Markdown → PDF formal (Minuta). |
 | `finalizar.ps1` | Atajo: renombrar + PDF de conversación. |
