@@ -44,6 +44,56 @@ def fmt_ts(segundos: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+# Alucinaciones canónicas de whisper en español (artefactos de YouTube presentes en
+# su corpus de entrenamiento, aparecen en silencios largos). Si un segmento ENTERO
+# normalizado es una de estas frases, se descarta solo. Solo frases que jamás se
+# dirían en una reunión; ante la duda, NO agregar acá (para eso están las pasadas).
+ALUCINACIONES = {
+    "gracias por ver el video",
+    "gracias por ver el video hasta la proxima",
+    "gracias por ver",
+    "no olvides suscribirte",
+    "suscribete al canal",
+    "suscribete",
+    "subtitulos realizados por la comunidad de amara org",
+    "subtitulos por la comunidad de amara org",
+}
+
+
+def _norm_frase(texto: str) -> str:
+    """minúsculas, sin acentos ni puntuación, espacios colapsados."""
+    t = unicodedata.normalize("NFD", texto.lower())
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+    return " ".join(re.findall(r"[a-z0-9]+", t))
+
+
+def colapsar_bucles(texto, ws, umbral=5, dejar=3):
+    """Colapsa los bucles de repetición del ASR: una misma palabra >= 'umbral' veces
+    SEGUIDAS ("no, no, no, ... x17") nunca es habla real; se dejan 'dejar' copias.
+    Recorta texto y tiempos por palabra JUNTOS (siguen sincronizados para la fusión).
+    Devuelve (texto, ws, palabras_colapsadas)."""
+    if not ws:
+        return texto, ws, 0
+    norm = [_norm_frase(w["palabra"]) for w in ws]
+    keep, i, colapsado = [], 0, 0
+    while i < len(ws):
+        j = i
+        while j + 1 < len(norm) and norm[j + 1] == norm[i] and norm[i]:
+            j += 1
+        run = j - i + 1
+        if run >= umbral:
+            keep.extend(range(i, i + dejar))
+            colapsado += run - dejar
+        else:
+            keep.extend(range(i, j + 1))
+        i = j + 1
+    if not colapsado:
+        return texto, ws, 0
+    ws = [ws[k] for k in keep]
+    # reconstruir el texto desde las palabras (la puntuación viene pegada a cada una)
+    return " ".join(w["palabra"] for w in ws), ws, colapsado
+
+
 def _norm_alinear(palabra: str) -> str:
     """Normaliza una palabra para el alineador MMS (vocabulario a-z): minúsculas y
     sin acentos. Lo que no queda representable (números, puntuación sola) va al
@@ -202,6 +252,23 @@ def main() -> int:
               for w in (seg.words or [])]
         segs.append({"ini": seg.start, "fin": seg.end, "texto": texto, "ws": ws})
         print(f"[{fmt_ts(seg.start)}] {texto}", flush=True)
+
+    # 1b) limpieza automática ANTES de alinear: descartar alucinaciones conocidas
+    #     y colapsar bucles de repetición (así tampoco se gasta GPU alineándolos y
+    #     la limpieza sobrevive a cualquier re-fusión posterior)
+    descartadas = colapsadas = 0
+    filtrados = []
+    for s in segs:
+        if _norm_frase(s["texto"]) in ALUCINACIONES:
+            descartadas += 1
+            continue
+        s["texto"], s["ws"], c = colapsar_bucles(s["texto"], s["ws"])
+        colapsadas += c
+        filtrados.append(s)
+    segs = filtrados
+    if descartadas or colapsadas:
+        print(f"Limpieza automática: {descartadas} alucinación(es) descartada(s), "
+              f"{colapsadas} palabra(s) de bucles colapsada(s)", flush=True)
 
     # 2) NO liberar el modelo whisper: `del model` (ctranslate2) aborta el proceso
     #    en este entorno (teardown CUDA de Windows, ver Notas del runbook). El
