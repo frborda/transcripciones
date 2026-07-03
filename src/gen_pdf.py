@@ -130,9 +130,10 @@ def main() -> int:
             f'<font size="9" color="#888888">({conteo[nombre]} intervenciones)</font>', st_meta))
     flow.append(Spacer(1, 10*mm))
     flow.append(Paragraph("Generado automáticamente a partir del audio. "
-                          "Los nombres de hablante fueron asignados manualmente; "
-                          "puede haber pequeños errores de transcripción o de "
-                          "atribución en momentos de habla simultánea.", st_sub))
+                          "Los hablantes se identifican por su voz y por el contexto "
+                          "de la conversación; puede haber pequeños errores de "
+                          "transcripción o de atribución en momentos de habla "
+                          "simultánea.", st_sub))
     flow.append(PageBreak())
 
     # --- cuerpo ---
