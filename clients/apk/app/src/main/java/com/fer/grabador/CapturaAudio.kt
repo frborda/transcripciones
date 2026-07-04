@@ -89,6 +89,9 @@ class CapturaAudio(
         private set
     @Volatile var gananciaActual = 1.0
         private set
+    /** Probabilidad de voz de Silero del último frame (calibración en vivo). */
+    @Volatile var probVoz = 0f
+        private set
 
     fun iniciar(primerArchivo: File) {
         if (corriendo) return
@@ -324,7 +327,9 @@ class CapturaAudio(
                         for (k in 0 until VadSilero.CHUNK) chunkVad[k] *= escala
                     }
                     esVoz = try {
-                        vad!!.prob(chunkVad) >= Ajustes.umbralVad
+                        val p = vad!!.prob(chunkVad)
+                        probVoz = p
+                        p >= Ajustes.umbralVad
                     } catch (e: Exception) {
                         vadRoto = true  // el modelo falló en runtime: energía para siempre
                         usandoVad = false

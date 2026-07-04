@@ -81,6 +81,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         @Volatile var nsN = false          // supresión de ruido del DSP activa
         @Volatile var dbCrudoN = -90       // nivel crudo del mic (dBFS), para la prueba
         @Volatile var ganN = 1.0           // ganancia digital aplicada, para la prueba
+        @Volatile var probN = 0f           // probabilidad de voz de Silero (en vivo)
     }
 
     private sealed class Trabajo {
@@ -363,14 +364,20 @@ class RecordService : Service(), CapturaAudio.Listener {
 
     // ---------- callbacks del motor de captura (hilo de captura) ----------
 
+    @Volatile private var vozHasta = 0L  // retención del indicador de voz (LED legible)
+
     override fun onFrame(nivel: Int, esVoz: Boolean, silencioso: Boolean, saturado: Boolean) {
         nivelN = nivel
-        hablaN = esVoz
+        // el LED con frames de 32 ms parpadearía invisible: retener 400 ms tras voz
+        val ahora = System.currentTimeMillis()
+        if (esVoz) vozHasta = ahora + 400
+        hablaN = ahora < vozHasta
         captura?.let { c ->
             vadN = c.usandoVad
             nsN = c.nsActivo
             dbCrudoN = c.dbCrudo
             ganN = c.gananciaActual
+            probN = c.probVoz
         }
         if (!corriendo || finalizando) return
 

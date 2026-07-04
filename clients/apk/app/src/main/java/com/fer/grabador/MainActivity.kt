@@ -53,8 +53,9 @@ class MainActivity : AppCompatActivity() {
                 tvTimer.text = if (RecordService.probando) {
                     (if (RecordService.vadN) "VAD" else "energía") +
                             (if (RecordService.nsN) "+NS" else "") +
-                            (if (RecordService.hablaN) "  🗣 hablando" else "  (silencio)") +
-                            "  ·  mic %d dB · ×%.0f".format(
+                            (if (RecordService.hablaN) "  🗣" else "  —") +
+                            "  ·  voz %.2f/%.2f  ·  mic %d dB · ×%.0f".format(
+                                RecordService.probN, Ajustes.umbralVad,
                                 RecordService.dbCrudoN, RecordService.ganN)
                 } else {
                     "parte ${fmtSeg((ahora - RecordService.tParte) / 1000)}" +
@@ -67,7 +68,7 @@ class MainActivity : AppCompatActivity() {
                 pbNivel.setProgressCompat(RecordService.nivelN, true)
                 filaSupresion.visibility = View.VISIBLE
                 // LED de voz: verde detectando, gris en pausa (para calibrar el slider)
-                ledVoz.backgroundTintList = ColorStateList.valueOf(
+                ledVoz.background.mutate().setTint(
                     ContextCompat.getColor(this@MainActivity,
                         if (RecordService.hablaN) R.color.dot_done else R.color.dot_idle))
             } else {
