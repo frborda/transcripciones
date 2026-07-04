@@ -184,6 +184,7 @@ class RecordService : Service(), CapturaAudio.Listener {
             return
         }
         probando = true
+        Ajustes.cargar(this)
         crearCanal()
         if (Build.VERSION.SDK_INT >= 30) {
             startForeground(1, notif("Prueba de micrófono"),
@@ -251,6 +252,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         }
         corriendo = true
         finalizando = false
+        Ajustes.cargar(this)  // por si el servicio arranca sin pasar por la Activity
         crearCanal()
         if (Build.VERSION.SDK_INT >= 30) {
             startForeground(1, notif("Grabando..."), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)

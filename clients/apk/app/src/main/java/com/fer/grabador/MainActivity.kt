@@ -34,6 +34,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var dotEstado: View
     private lateinit var pbNivel: com.google.android.material.progressindicator.LinearProgressIndicator
     private lateinit var btnTest: Button
+    private lateinit var filaSupresion: View
+    private lateinit var ledVoz: View
 
     // el Salir de la notificación también cierra esta pantalla
     private val salirReceiver = object : BroadcastReceiver() {
@@ -63,9 +65,15 @@ class MainActivity : AppCompatActivity() {
                 tvTimer.visibility = View.VISIBLE
                 pbNivel.visibility = View.VISIBLE
                 pbNivel.setProgressCompat(RecordService.nivelN, true)
+                filaSupresion.visibility = View.VISIBLE
+                // LED de voz: verde detectando, gris en pausa (para calibrar el slider)
+                ledVoz.backgroundTintList = ColorStateList.valueOf(
+                    ContextCompat.getColor(this@MainActivity,
+                        if (RecordService.hablaN) R.color.dot_done else R.color.dot_idle))
             } else {
                 tvTimer.visibility = View.GONE
                 pbNivel.visibility = View.GONE
+                filaSupresion.visibility = View.GONE
             }
             btnTest.text = if (RecordService.probando) "Detener" else "Probar"
             btnTest.visibility = if (RecordService.corriendo) View.GONE else View.VISIBLE
@@ -128,8 +136,21 @@ class MainActivity : AppCompatActivity() {
         dotEstado = findViewById(R.id.dotEstado)
         pbNivel = findViewById(R.id.pbNivel)
         btnTest = findViewById(R.id.btnTest)
+        filaSupresion = findViewById(R.id.filaSupresion)
+        ledVoz = findViewById(R.id.ledVoz)
         findViewById<TextView>(R.id.tvSub).text =
             "Reuniones → PDFs · v${BuildConfig.VERSION_NAME}"
+
+        // slider de supresión EN VIVO: aplica al detector al instante y se persiste
+        Ajustes.cargar(this)
+        val slider = findViewById<com.google.android.material.slider.Slider>(R.id.slSupresion)
+        slider.value = Prefs.supresion(this).toFloat()
+        slider.addOnChangeListener { _, value, fromUser ->
+            if (fromUser) {
+                Ajustes.supresion = value.toInt()
+                Prefs.setSupresion(this, value.toInt())
+            }
+        }
 
         findViewById<Button>(R.id.btnIniciar).setOnClickListener { iniciar() }
         findViewById<Button>(R.id.btnCortar).setOnClickListener { servicio(RecordService.ACTION_CUT) }

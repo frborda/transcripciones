@@ -316,16 +316,15 @@ class CapturaAudio(
                         if (a > maxAbs) maxAbs = a
                         i += 3; j++
                     }
-                    // normalizar la ENTRADA del VAD (independiente de la grabación):
+    // normalizar la ENTRADA del VAD (independiente de la grabación):
                     // la voz LEJANA/baja llega a Silero a nivel sano y la detecta.
-                    // Tope ×16: con ×40 el ruido ambiente subía tanto que a veces
-                    // pasaba por voz y los chunks no cortaban nunca.
+                    // El tope y el umbral los gradúa el slider de supresión EN VIVO.
                     if (maxAbs > 1e-4f && maxAbs < 0.5f) {
-                        val escala = minOf(0.5f / maxAbs, 16f)
+                        val escala = minOf(0.5f / maxAbs, Ajustes.capNorm)
                         for (k in 0 until VadSilero.CHUNK) chunkVad[k] *= escala
                     }
                     esVoz = try {
-                        vad!!.esVoz(chunkVad)
+                        vad!!.prob(chunkVad) >= Ajustes.umbralVad
                     } catch (e: Exception) {
                         vadRoto = true  // el modelo falló en runtime: energía para siempre
                         usandoVad = false

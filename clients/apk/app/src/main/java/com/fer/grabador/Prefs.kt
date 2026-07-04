@@ -13,6 +13,9 @@ object Prefs {
     fun cruda(c: Context): Boolean = sp(c).getBoolean("cruda", false)
     /** Supresión de ruido del DSP del teléfono (NoiseSuppressor). */
     fun ns(c: Context): Boolean = sp(c).getBoolean("ns", true)
+    /** Cantidad de supresión voz/ruido del detector (0..100, slider en vivo). */
+    fun supresion(c: Context): Int = sp(c).getInt("supresion", 50)
+    fun setSupresion(c: Context, v: Int) = sp(c).edit().putInt("supresion", v).apply()
 
     fun guardar(c: Context, token: String, chatId: String, intervaloSeg: Int, auto: Boolean,
                 cruda: Boolean = false, ns: Boolean = true) {
