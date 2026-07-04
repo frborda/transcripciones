@@ -220,13 +220,15 @@ class RecordService : Service(), CapturaAudio.Listener {
         }.apply { isDaemon = true }.start()
     }
 
-    /** Fuente de audio según preferencias y soporte del equipo. */
+    /** Fuente de audio según preferencias y soporte del equipo.
+     *  MIC por defecto: en el S22 Ultra VOICE_RECOGNITION entrega la voz a ~-36 dBFS
+     *  (inaudible, VAD ciego); MIC usa el AGC del fabricante y llega a niveles sanos. */
     private fun fuenteElegida(): Int {
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val soportaCruda =
             am.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) == "true"
         return if (Prefs.cruda(this) && soportaCruda) MediaRecorder.AudioSource.UNPROCESSED
-               else MediaRecorder.AudioSource.VOICE_RECOGNITION
+               else MediaRecorder.AudioSource.MIC
     }
 
     // ---------- ciclo de vida de la grabación ----------

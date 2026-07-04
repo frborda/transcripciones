@@ -67,7 +67,9 @@ class CapturaAudio(
     // picos de habla (nunca sube durante silencio: amplificar el ruido de fondo
     // rompía el medidor y la detección).
     private var ganancia = 1.0
-    private var picoVoz = 8000.0
+    // arranca BAJO: el primer pico de voz real lo eleva al instante (max), así la
+    // ganancia converge en ~1 s en vez de tardar 10 s decayendo desde un valor alto
+    private var picoVoz = 600.0
 
     /** true si el VAD neuronal está activo (false = detector de energía). */
     @Volatile var usandoVad = false
@@ -240,7 +242,7 @@ class CapturaAudio(
                 if (vozPorEnergia) {
                     picoVoz = max(pico0.toDouble(), picoVoz * 0.995)
                     val deseada = (16384.0 / max(picoVoz, 600.0)).coerceIn(1.0, 30.0)
-                    ganancia += (deseada - ganancia) * 0.05
+                    ganancia += (deseada - ganancia) * 0.15  // converge en ~1 s de voz
                 }
                 dbCrudo = (20.0 * log10(max(rms0, 1.0) / 32768.0)).toInt()
                 gananciaActual = ganancia

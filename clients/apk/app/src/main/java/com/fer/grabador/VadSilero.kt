@@ -18,7 +18,9 @@ import java.nio.LongBuffer
  * y v4 (input/sr/h/c -> output/hn/cn). Cualquier error se propaga: el llamador
  * cae al detector de energía adaptativo.
  */
-class VadSilero(ctx: Context, private val umbral: Float = 0.5f) {
+// umbral 0.35: con voz a nivel moderado el 0.5 clásico deja habla afuera; 0.3-0.4
+// es el rango recomendado para detección de voz (vs. música/ruido).
+class VadSilero(ctx: Context, private val umbral: Float = 0.35f) {
 
     companion object {
         const val CHUNK = 512      // muestras a 16 kHz = 32 ms
