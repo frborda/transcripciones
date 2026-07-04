@@ -48,7 +48,8 @@ class MainActivity : AppCompatActivity() {
                 val ahora = System.currentTimeMillis()
                 tvTimer.text = "parte ${fmtSeg((ahora - RecordService.tParte) / 1000)}" +
                         "  ·  total ${fmtSeg((ahora - RecordService.tTotal) / 1000)}" +
-                        (if (RecordService.hablaN) "  ·  🗣" else "")
+                        (if (RecordService.vadN) "  ·  VAD" else "  ·  energía") +
+                        (if (RecordService.hablaN) " 🗣" else "")
                 tvTimer.visibility = View.VISIBLE
                 pbNivel.visibility = View.VISIBLE
                 pbNivel.setProgressCompat(RecordService.nivelN, true)

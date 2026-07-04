@@ -73,6 +73,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         @Volatile var grabandoArchivo = ""
         @Volatile var nivelN = 0           // nivel RMS 0..100 (PCM real)
         @Volatile var hablaN = false       // el VAD detecta habla ahora
+        @Volatile var vadN = false         // true = VAD neuronal activo (no energía)
     }
 
     private sealed class Trabajo {
@@ -291,6 +292,7 @@ class RecordService : Service(), CapturaAudio.Listener {
     override fun onFrame(nivel: Int, esVoz: Boolean, saturado: Boolean) {
         nivelN = nivel
         hablaN = esVoz
+        vadN = captura?.usandoVad ?: false
         if (!corriendo || finalizando) return
 
         // tope duro por parte
@@ -325,8 +327,11 @@ class RecordService : Service(), CapturaAudio.Listener {
     }
 
     override fun onParteCerrada(parte: CapturaAudio.ParteCerrada) {
-        // una parte casi sin habla no se sube: se aparta (menos datos y menos GPU)
-        if (parte.hablaMs < HABLA_MIN_MS && parte.durMs > 10_000) {
+        // una parte casi sin habla no se sube: se aparta (menos datos y menos GPU).
+        // DOBLE condición: sin habla según el VAD *y* nivel medio realmente bajo —
+        // si el detector quedara ciego (señal baja, modelo caído), la parte se sube
+        // igual: perder audio real es mucho peor que subir un silencio.
+        if (parte.hablaMs < HABLA_MIN_MS && parte.durMs > 10_000 && parte.nivelMedio < 12) {
             val destino = File(parte.file.parentFile, "silencio_" + parte.file.name)
             parte.file.renameTo(destino)
             pendientesN = pendientes()

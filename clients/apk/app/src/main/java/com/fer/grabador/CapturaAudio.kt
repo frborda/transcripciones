@@ -10,8 +10,8 @@ import android.media.MediaMuxer
 import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.log10
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
@@ -39,7 +39,8 @@ class CapturaAudio(
         fun onError(msg: String)
     }
 
-    data class ParteCerrada(val file: File, val durMs: Long, val hablaMs: Long)
+    data class ParteCerrada(val file: File, val durMs: Long, val hablaMs: Long,
+                            val nivelMedio: Int)
 
     companion object {
         const val SR = 48000
@@ -54,6 +55,19 @@ class CapturaAudio(
 
     // detector de energía adaptativo (fallback sin VAD): piso de ruido con EMA
     private var pisoRuido = 150.0
+
+    // envolvente del medidor: ataque instantáneo, caída suave (~500 ms), como un vúmetro
+    private var envNivel = 0.0
+
+    // AUTO-GANANCIA digital: los perfiles sin AGC (VOICE_RECOGNITION/UNPROCESSED en
+    // Samsung) entregan señal muy baja; sin esto ni el VAD ni whisper "escuchan".
+    // Apunta los picos de voz recientes a ~-6 dBFS, sube suave y baja rápido si recorta.
+    private var ganancia = 1.0
+    private var picoSeguido = 2000.0
+
+    /** true si el VAD neuronal está activo (false = detector de energía). */
+    @Volatile var usandoVad = false
+        private set
 
     fun iniciar(primerArchivo: File) {
         if (corriendo) return
@@ -101,15 +115,18 @@ class CapturaAudio(
         var ultimoPtsEscrito = -1L
         var framesParte = 0L              // duración de la parte en frames de 32 ms
         var hablaMsParte = 0L
+        var sumaNivelParte = 0L
         var muestrasTotales = 0L
 
         fun cerrarParte() {
             try { muxer?.stop() } catch (_: Exception) {}
             try { muxer?.release() } catch (_: Exception) {}
             muxer = null
-            listener.onParteCerrada(ParteCerrada(archivoActual, framesParte * 32, hablaMsParte))
+            val medio = if (framesParte > 0) (sumaNivelParte / framesParte).toInt() else 0
+            listener.onParteCerrada(ParteCerrada(archivoActual, framesParte * 32, hablaMsParte, medio))
             framesParte = 0
             hablaMsParte = 0
+            sumaNivelParte = 0
         }
 
         fun abrirParte(f: File) {
@@ -179,6 +196,7 @@ class CapturaAudio(
             val pcm = ShortArray(FRAME)
             val chunkVad = FloatArray(VadSilero.CHUNK)
             var vadRoto = vad == null
+            usandoVad = !vadRoto
 
             while (!pedidoParar) {
                 // leer un frame completo (32 ms)
@@ -190,7 +208,24 @@ class CapturaAudio(
                 }
                 if (pedidoParar) break
 
-                // métricas del PCM real
+                // AUTO-GANANCIA: seguir el pico reciente de la señal cruda y llevar la
+                // voz a ~-6 dBFS (los perfiles sin AGC entregan muy poco nivel)
+                var pico0 = 0
+                for (s in pcm) {
+                    val a = if (s < 0) (-s).toInt() else s.toInt()
+                    if (a > pico0) pico0 = a
+                }
+                picoSeguido = max(pico0.toDouble(), picoSeguido * 0.995)  // decae ~8 s
+                val deseada = (16384.0 / max(picoSeguido, 200.0)).coerceIn(1.0, 12.0)
+                ganancia += (deseada - ganancia) * 0.05
+                if (ganancia > 1.01) {
+                    for (i in pcm.indices) {
+                        val v = (pcm[i] * ganancia).toInt()
+                        pcm[i] = v.coerceIn(-32768, 32767).toShort()
+                    }
+                }
+
+                // métricas del PCM YA amplificado (lo mismo que se graba y oye el VAD)
                 var suma = 0.0
                 var pico = 0
                 for (s in pcm) {
@@ -199,8 +234,14 @@ class CapturaAudio(
                     val a = if (v < 0) -v else v
                     if (a > pico) pico = a
                 }
+                if (pico >= 32700) ganancia = max(1.0, ganancia * 0.85)  // recorta: bajar YA
                 val rms = sqrt(suma / FRAME)
-                val nivel = min(100, (rms * 100 / 8000).toInt())
+                // medidor en dB (el oído es logarítmico): -60 dBFS → 0, 0 dBFS → 100.
+                // Con voz normal (~-35..-20 dBFS) la barra vive en el 40-70 %.
+                val db = 20.0 * log10(max(rms, 1.0) / 32768.0)
+                val instante = ((db + 60.0) * 100.0 / 60.0).coerceIn(0.0, 100.0)
+                envNivel = max(instante, envNivel * 0.93)  // caída ~500 ms
+                val nivel = envNivel.toInt()
                 val saturado = pico >= 32200
 
                 // VAD: decimar 48k→16k (promedio de a 3) y preguntar por HABLA
@@ -216,6 +257,7 @@ class CapturaAudio(
                         vad!!.esVoz(chunkVad)
                     } catch (e: Exception) {
                         vadRoto = true  // el modelo falló en runtime: energía para siempre
+                        usandoVad = false
                         esVozPorEnergia(rms)
                     }
                 } else {
@@ -223,6 +265,7 @@ class CapturaAudio(
                 }
                 framesParte++
                 if (esVoz) hablaMsParte += 32
+                sumaNivelParte += nivel
                 listener.onFrame(nivel, esVoz, saturado)
 
                 // encolar el PCM al encoder
