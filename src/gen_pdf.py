@@ -15,9 +15,10 @@ from pathlib import Path
 from reportlab.lib.pagesizes import A4, A5
 from reportlab.lib.units import mm
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, HRFlowable, KeepTogether, PageBreak,
+    Table, TableStyle,
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
@@ -85,7 +86,6 @@ def main() -> int:
         fs_sub = 9.5
         fs_meta = 12
         fs_texto, ld_texto = 13, 18
-        cover_top = 14 * mm
     else:  # desktop
         pagesize = A4
         mlat, mtb = 22 * mm, 20 * mm
@@ -93,7 +93,6 @@ def main() -> int:
         fs_sub = 11
         fs_meta = 12
         fs_texto, ld_texto = 12, 17
-        cover_top = 40 * mm
 
     out = Path(args.out) if args.out else src.with_suffix(".pdf")
     doc = SimpleDocTemplate(
@@ -102,22 +101,50 @@ def main() -> int:
         title=titulo, author="Transcripción automática",
     )
     ss = getSampleStyleSheet()
-    st_titulo = ParagraphStyle("t", parent=ss["Title"], fontSize=fs_tit, leading=ld_tit, spaceAfter=6)
+    AZUL = PALETA[0]
+    GRIS = colors.HexColor("#555555")
     st_sub = ParagraphStyle("s", parent=ss["Normal"], fontSize=fs_sub, leading=fs_sub + 4,
-                            textColor=colors.HexColor("#666666"), alignment=TA_CENTER)
+                            textColor=colors.HexColor("#666666"))
     st_meta = ParagraphStyle("m", parent=ss["Normal"], fontSize=fs_meta, leading=fs_meta + 6)
-    st_ts = ParagraphStyle("ts", parent=ss["Normal"], fontSize=8, leading=10,
-                           textColor=colors.HexColor("#999999"))
-    st_texto = ParagraphStyle("tx", parent=ss["Normal"], fontSize=fs_texto, leading=ld_texto, spaceAfter=2)
+    st_texto = ParagraphStyle("tx", parent=ss["Normal"], fontSize=fs_texto, leading=ld_texto,
+                              spaceAfter=2, alignment=TA_JUSTIFY)
+
+    def pie(canv, _doc):
+        canv.saveState()
+        canv.setFont("Helvetica", 8)
+        canv.setFillColor(GRIS)
+        canv.drawCentredString(pagesize[0] / 2, mtb * 0.4, f"— {canv.getPageNumber()} —")
+        canv.restoreState()
 
     flow = []
 
-    # --- portada ---
-    flow.append(Spacer(1, cover_top))
-    flow.append(Paragraph(esc(titulo), st_titulo))
+    # --- portada: banda de título (tipo de documento + nombre de la reunión) ---
+    nombre_reunion = titulo
+    for sep in ("—", " - "):
+        if sep in titulo:
+            nombre_reunion = titulo.split(sep, 1)[1].strip()
+            break
+    st_kick = ParagraphStyle("kick", parent=ss["Normal"], fontSize=fs_sub,
+                             leading=fs_sub + 2, textColor=colors.white)
+    st_tt = ParagraphStyle("tt", parent=ss["Title"], fontSize=fs_tit, leading=ld_tit,
+                           textColor=colors.white, alignment=0,
+                           spaceBefore=0, spaceAfter=0)
+    banda = Table([[[Paragraph("<b>CONVERSACIÓN</b>", st_kick),
+                     Spacer(1, 3),
+                     Paragraph(f"<b>{esc(nombre_reunion)}</b>", st_tt)]]],
+                  colWidths=[pagesize[0] - 2 * mlat])
+    banda.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), AZUL),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+    ]))
+    flow.append(banda)
     dur = items[-1][0]
-    flow.append(Paragraph(f"Duración ~{dur} &nbsp;·&nbsp; {len(items)} intervenciones", st_sub))
-    flow.append(Spacer(1, 12*mm))
+    flow.append(Spacer(1, 5))
+    flow.append(Paragraph(f"<i>Duración ~{dur} &nbsp;·&nbsp; {len(items)} intervenciones</i>", st_sub))
+    flow.append(Spacer(1, 10*mm))
     flow.append(Paragraph("<b>Participantes</b>", st_meta))
     flow.append(Spacer(1, 2*mm))
     # conteo por hablante
@@ -153,7 +180,7 @@ def main() -> int:
             ultimo = nombre
         flow.append(Paragraph(esc(texto), st_texto))
 
-    doc.build(flow)
+    doc.build(flow, onFirstPage=pie, onLaterPages=pie)
     print(f"PDF generado: {out}  ({out.stat().st_size//1024} KB)")
     return 0
 
