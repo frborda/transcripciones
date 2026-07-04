@@ -129,6 +129,8 @@ class MainActivity : AppCompatActivity() {
         dotEstado = findViewById(R.id.dotEstado)
         pbNivel = findViewById(R.id.pbNivel)
         btnTest = findViewById(R.id.btnTest)
+        findViewById<TextView>(R.id.tvSub).text =
+            "Reuniones → PDFs · v${BuildConfig.VERSION_NAME}"
 
         findViewById<Button>(R.id.btnIniciar).setOnClickListener { iniciar() }
         findViewById<Button>(R.id.btnCortar).setOnClickListener { servicio(RecordService.ACTION_CUT) }

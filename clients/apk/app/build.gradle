@@ -11,11 +11,12 @@ android {
         applicationId "com.fer.grabador"
         minSdk 26
         targetSdk 34
-        versionCode 17
-        versionName "2.0.5"
+        versionCode 18
+        versionName "2.0.6"
         // solo ARM64 (todos los teléfonos modernos): ONNX Runtime pesa ~15 MB por ABI
         ndk { abiFilters 'arm64-v8a' }
     }
+    buildFeatures { buildConfig true }
     buildTypes {
         release {
             minifyEnabled false
