@@ -56,9 +56,12 @@ class RecordService : Service(), CapturaAudio.Listener {
         const val BC_SALIR = "com.fer.grabador.BC_SALIR"   // broadcast para cerrar la Activity
         const val CANAL = "grabacion"
 
-        // 1,5 s: una pausa de 0,7 s es una RESPIRACIÓN entre cláusulas (cortaba a
-        // mitad de frase); el fin real de una intervención dura más que esto.
-        const val PAUSA_CORTE_MS = 1500
+        // 300 ms de "sin voz" (VAD suavizado) bastan para cortar: el suavizado de la
+        // probabilidad (~200 ms de caída) ya cubre los cierres internos de una
+        // palabra, así que esto corta en el hueco ENTRE palabras/frases sin esperar
+        // un silencio largo. La rotación no pierde audio (solo cambia el archivo),
+        // por lo que cortar en un hueco corto no cuesta nada.
+        const val PAUSA_CORTE_MS = 300
         const val MAX_ESPERA_MS = 30_000L  // si no hay pausa tras el intervalo, cortar igual
         const val TOPE_PARTE_MS = 45 * 60 * 1000L  // tope duro por parte (evita el 413 de Telegram)
         const val HABLA_MIN_MS = 1500L     // una parte con menos habla que esto NO se sube
