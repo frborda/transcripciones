@@ -24,6 +24,7 @@ class VadSilero(ctx: Context, private val umbral: Float = 0.35f) {
 
     companion object {
         const val CHUNK = 512      // muestras a 16 kHz = 32 ms
+        const val CONTEXTO = 64    // v5 exige 64 muestras del chunk ANTERIOR adelante
         const val SR = 16000L
     }
 
@@ -36,6 +37,11 @@ class VadSilero(ctx: Context, private val umbral: Float = 0.35f) {
     private var state = FloatArray(2 * 1 * 128)
     private var h = FloatArray(2 * 1 * 64)
     private var c = FloatArray(2 * 1 * 64)
+    // v5: la entrada es [1, 64+512] — las últimas 64 muestras del chunk anterior
+    // van adelante. SIN este contexto el modelo no falla: devuelve ~0 SIEMPRE
+    // (probabilidad clavada en 0.00 aunque se hable fuerte — bug de campo).
+    private val contexto = FloatArray(CONTEXTO)
+    private val entradaV5 = FloatArray(CONTEXTO + CHUNK)
 
     private var srTensor: OnnxTensor
 
@@ -65,16 +71,20 @@ class VadSilero(ctx: Context, private val umbral: Float = 0.35f) {
     }
 
     fun reset() {
-        state.fill(0f); h.fill(0f); c.fill(0f)
+        state.fill(0f); h.fill(0f); c.fill(0f); contexto.fill(0f)
     }
 
     /** true si el tramo (512 muestras float -1..1 a 16 kHz) contiene habla. */
     fun esVoz(chunk: FloatArray): Boolean = prob(chunk) >= umbral
 
     fun prob(chunk: FloatArray): Float {
-        OnnxTensor.createTensor(env, FloatBuffer.wrap(chunk),
-                                longArrayOf(1, CHUNK.toLong())).use { entrada ->
-            if (esV5) {
+        if (esV5) {
+            // armar [contexto(64) + chunk(512)] y actualizar el contexto para el próximo
+            System.arraycopy(contexto, 0, entradaV5, 0, CONTEXTO)
+            System.arraycopy(chunk, 0, entradaV5, CONTEXTO, CHUNK)
+            System.arraycopy(chunk, CHUNK - CONTEXTO, contexto, 0, CONTEXTO)
+            OnnxTensor.createTensor(env, FloatBuffer.wrap(entradaV5),
+                                    longArrayOf(1, (CONTEXTO + CHUNK).toLong())).use { entrada ->
                 OnnxTensor.createTensor(env, FloatBuffer.wrap(state),
                                         longArrayOf(2, 1, 128)).use { st ->
                     session.run(mapOf("input" to entrada, "state" to st, "sr" to srTensor)).use { r ->
@@ -83,7 +93,11 @@ class VadSilero(ctx: Context, private val umbral: Float = 0.35f) {
                         return prob
                     }
                 }
-            } else {
+            }
+        }
+        OnnxTensor.createTensor(env, FloatBuffer.wrap(chunk),
+                                longArrayOf(1, CHUNK.toLong())).use { entrada ->
+            run {
                 OnnxTensor.createTensor(env, FloatBuffer.wrap(h), longArrayOf(2, 1, 64)).use { th ->
                     OnnxTensor.createTensor(env, FloatBuffer.wrap(c), longArrayOf(2, 1, 64)).use { tc ->
                         session.run(mapOf("input" to entrada, "sr" to srTensor,
