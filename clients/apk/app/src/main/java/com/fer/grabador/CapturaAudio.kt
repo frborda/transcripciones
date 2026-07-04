@@ -215,7 +215,7 @@ class CapturaAudio(
                 try {
                     if (android.media.audiofx.NoiseSuppressor.isAvailable()) {
                         ns = android.media.audiofx.NoiseSuppressor.create(audio.audioSessionId)
-                            ?.apply { enabled = true }
+                            ?.apply { enabled = Ajustes.nsDeseado }
                         nsActivo = ns?.enabled == true
                     }
                     if (android.media.audiofx.AcousticEchoCanceler.isAvailable()) {
@@ -240,8 +240,22 @@ class CapturaAudio(
             val chunkVad = FloatArray(VadSilero.CHUNK)
             var vadRoto = vad == null
             usandoVad = !vadRoto
+            var framesDesdeNs = 0
 
             while (!pedidoParar) {
+                // el slider en su mínimo también APAGA el NS del DSP en vivo (el NS
+                // del fabricante aplasta la voz lejana como si fuera ruido); se
+                // chequea ~1 vez por segundo para no tocar el efecto por frame
+                if (ns != null && ++framesDesdeNs >= 31) {
+                    framesDesdeNs = 0
+                    val quiere = supresionRuido && Ajustes.nsDeseado
+                    try {
+                        if (ns.enabled != quiere) {
+                            ns.enabled = quiere
+                            nsActivo = ns.enabled
+                        }
+                    } catch (_: Exception) {}
+                }
                 // leer un frame completo (32 ms)
                 var leidas = 0
                 while (leidas < FRAME && !pedidoParar) {
@@ -322,8 +336,8 @@ class CapturaAudio(
     // normalizar la ENTRADA del VAD (independiente de la grabación):
                     // la voz LEJANA/baja llega a Silero a nivel sano y la detecta.
                     // El tope y el umbral los gradúa el slider de supresión EN VIVO.
-                    if (maxAbs > 1e-4f && maxAbs < 0.5f) {
-                        val escala = minOf(0.5f / maxAbs, Ajustes.capNorm)
+                    if (maxAbs > 1e-4f && maxAbs < 0.7f) {
+                        val escala = minOf(0.7f / maxAbs, Ajustes.capNorm)
                         for (k in 0 until VadSilero.CHUNK) chunkVad[k] *= escala
                     }
                     esVoz = try {
