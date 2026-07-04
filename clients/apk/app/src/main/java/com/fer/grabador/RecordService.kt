@@ -387,10 +387,13 @@ class RecordService : Service(), CapturaAudio.Listener {
             handler.post { if (corriendo && !finalizando) { rotar(); reprogramarAuto() } }
             return
         }
-        // corte armado: SOLO cuando VAD y energía COINCIDEN en que es una pausa
-        // (si cualquiera de los dos cree que hay voz, no se corta), con tope de espera
+        // corte armado: decide SOLO el VAD (con el umbral del slider). La condición
+        // extra de energía-en-el-piso exigía silencio ABSOLUTO y el ruido de sala
+        // bloqueaba el corte para siempre; el objetivo real es no cortar en medio
+        // de una palabra, y eso lo garantiza el VAD + 1,5 s de pausa (ninguna
+        // palabra tiene huecos internos de ese tamaño). Tope de espera de 30 s.
         if (armado && !cortePedido) {
-            if (esVoz || !silencioso) bajosMs = 0 else bajosMs += 32
+            if (esVoz) bajosMs = 0 else bajosMs += 32
             val vencio = SystemClock.elapsedRealtime() - armadoDesde > MAX_ESPERA_MS
             if (bajosMs >= PAUSA_CORTE_MS || vencio) {
                 cortePedido = true
