@@ -306,13 +306,28 @@ class RecordService : Service() {
         val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this)
         else @Suppress("DEPRECATION") MediaRecorder()
         try {
-            r.setAudioSource(MediaRecorder.AudioSource.MIC)
+            // VOICE_RECOGNITION: perfil de captura pensado para ASR (sin el recorte de
+            // banda telefónico y con procesamiento menos agresivo que MIC); es
+            // exactamente lo que Whisper quiere como entrada.
+            r.setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
             r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
             r.setAudioChannels(1)
-            r.setAudioSamplingRate(44100)
-            r.setAudioEncodingBitRate(96000)
+            // 48 kHz / 128 kbps: conserva mejor consonantes y voces lejanas que
+            // 44.1k/96k; una parte de 1 min sigue pesando ~1 MB.
+            r.setAudioSamplingRate(48000)
+            r.setAudioEncodingBitRate(128000)
             r.setOutputFile(f.absolutePath)
+            if (Build.VERSION.SDK_INT >= 29) {
+                // teléfonos con varios micrófonos (S22 Ultra: 3): pedir campo de
+                // captación AMPLIO, para una reunión alrededor de una mesa en vez de
+                // una sola voz pegada al teléfono. Si el equipo no lo soporta, es no-op.
+                try {
+                    r.setPreferredMicrophoneDirection(
+                        android.media.MicrophoneDirection.MIC_DIRECTION_UNSPECIFIED)
+                    r.setPreferredMicrophoneFieldDimension(-1.0f)  // -1 = lo más amplio
+                } catch (_: Exception) {}
+            }
             // tope duro por parte: si el intervalo automático está apagado, evita que
             // un segmento crezca sin límite y Telegram lo rechace con 413.
             r.setMaxDuration(TOPE_PARTE_MS)
