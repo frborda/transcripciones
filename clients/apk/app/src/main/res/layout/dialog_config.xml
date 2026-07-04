@@ -70,6 +70,16 @@
             android:textColor="?attr/colorOnSurface"
             android:textSize="14sp" />
 
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/swCruda"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:checked="false"
+            android:text="Fuente cruda (sin procesar, si el equipo la soporta)"
+            android:textColor="?attr/colorOnSurface"
+            android:textSize="14sp" />
+
         <com.google.android.material.textfield.TextInputLayout
             style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
             android:layout_width="wrap_content"

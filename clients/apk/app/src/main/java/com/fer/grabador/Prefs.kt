@@ -9,13 +9,17 @@ object Prefs {
     fun chatId(c: Context): String = sp(c).getString("chat_id", "") ?: ""
     fun intervaloSeg(c: Context): Int = sp(c).getInt("intervalo_seg", 60)
     fun auto(c: Context): Boolean = sp(c).getBoolean("auto", true)
+    /** Fuente UNPROCESSED (audio 100% crudo, sin AGC/supresión del fabricante). */
+    fun cruda(c: Context): Boolean = sp(c).getBoolean("cruda", false)
 
-    fun guardar(c: Context, token: String, chatId: String, intervaloSeg: Int, auto: Boolean) {
+    fun guardar(c: Context, token: String, chatId: String, intervaloSeg: Int, auto: Boolean,
+                cruda: Boolean = false) {
         sp(c).edit()
             .putString("token", token)
             .putString("chat_id", chatId)
             .putInt("intervalo_seg", if (intervaloSeg < 5) 5 else intervaloSeg)
             .putBoolean("auto", auto)
+            .putBoolean("cruda", cruda)
             .apply()
     }
 

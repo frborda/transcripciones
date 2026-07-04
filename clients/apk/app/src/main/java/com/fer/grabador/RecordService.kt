@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioManager
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Handler
@@ -28,20 +29,22 @@ import java.util.Locale
 import java.util.concurrent.LinkedBlockingQueue
 
 /**
- * Servicio en primer plano (tipo micrófono): graba con la pantalla apagada/bloqueada.
+ * Servicio en primer plano: graba con la pantalla apagada/bloqueada.
  *
- * - INICIAR: manda "inicio" por el bot (abre la sesión incremental en la PC) y
- *   arranca a grabar el primer segmento.
- * - CORTAR (manual o automático cada N min): cierra el segmento actual, arranca
- *   el siguiente al instante (~0,2 s de hueco) y sube el cerrado por Telegram.
- * - FINALIZAR: cierra y sube el último segmento, manda "fin" (la PC une todo,
- *   pregunta hablantes y entrega los PDFs) y apaga el servicio cuando la cola
- *   de subidas queda vacía.
+ * La captura la hace CapturaAudio (AudioRecord + encoder AAC propio): las partes
+ * rotan SIN perder audio (solo cambia el archivo de salida) y el corte automático
+ * lo decide un VAD neuronal (Silero) que detecta el FIN de una frase hablada, no
+ * una simple caída de energía. Una parte sin habla no se sube (se aparta).
+ *
+ * - INICIAR: manda "inicio" por el bot y arranca la captura.
+ * - CORTAR (manual, por volumen o automático en la primera pausa tras el
+ *   intervalo): cierra la parte y sigue grabando en la siguiente, sin hueco.
+ * - FINALIZAR: cierra y sube lo pendiente, manda "fin" y vuelve al reposo.
  *
  * Las subidas van en una cola FIFO con reintentos: el "fin" siempre sale
  * después de la última parte.
  */
-class RecordService : Service() {
+class RecordService : Service(), CapturaAudio.Listener {
 
     companion object {
         const val ACTION_START = "com.fer.grabador.START"
@@ -51,9 +54,11 @@ class RecordService : Service() {
         const val ACTION_EXIT = "com.fer.grabador.EXIT"    // salir: cierra app y notificación
         const val BC_SALIR = "com.fer.grabador.BC_SALIR"   // broadcast para cerrar la Activity
         const val CANAL = "grabacion"
-        const val UMBRAL_SILENCIO = 1800   // amplitud (0..32767) por debajo = "silencio"
+
+        const val PAUSA_CORTE_MS = 600     // sin habla seguida (VAD) para cortar, una pausa real
         const val MAX_ESPERA_MS = 30_000L  // si no hay pausa tras el intervalo, cortar igual
-        const val TOPE_PARTE_MS = 45 * 60 * 1000  // tope duro por parte (evita el 413 de Telegram)
+        const val TOPE_PARTE_MS = 45 * 60 * 1000L  // tope duro por parte (evita el 413 de Telegram)
+        const val HABLA_MIN_MS = 1500L     // una parte con menos habla que esto NO se sube
 
         @Volatile var corriendo = false
         @Volatile var estado = "detenido"
@@ -66,6 +71,8 @@ class RecordService : Service() {
         @Volatile var tTotal = 0L
         @Volatile var subiendoAhora = ""
         @Volatile var grabandoArchivo = ""
+        @Volatile var nivelN = 0           // nivel RMS 0..100 (PCM real)
+        @Volatile var hablaN = false       // el VAD detecta habla ahora
     }
 
     private sealed class Trabajo {
@@ -74,11 +81,10 @@ class RecordService : Service() {
         object Fin : Trabajo()
     }
 
-    private var recorder: MediaRecorder? = null
-    private var archivoActual: File? = null
-    @Volatile private var parte = 0            // lo lee el uploader: volátil por visibilidad
+    private var captura: CapturaAudio? = null
+    @Volatile private var parte = 0            // lo leen uploader y el hilo de captura
     private var sesion = ""
-    @Volatile private var finalizando = false  // idem: lo lee el uploader
+    @Volatile private var finalizando = false
     private var wakeLock: PowerManager.WakeLock? = null
     private var mediaSession: MediaSessionCompat? = null
     private var ultimoCorteVol = 0L
@@ -87,36 +93,22 @@ class RecordService : Service() {
     private var uploader: Thread? = null
     @Volatile private var uploaderActivo = false
 
-    // Al cumplirse el intervalo no cortamos de una: "armamos" y esperamos la primera
-    // pausa (silencio) para no cortar en medio de una frase.
-    private val corteAuto = Runnable {
-        if (recorder != null && !finalizando) {
-            esperaSilencio.bajos = 0
-            esperaSilencio.desde = SystemClock.elapsedRealtime()
-            try { recorder?.maxAmplitude } catch (e: Exception) {} // resetea el medidor
-            handler.post(esperaSilencio)
-        }
-    }
+    // --- máquina de corte (la alimenta onFrame, en el hilo de captura) ---
+    @Volatile private var armado = false       // el intervalo venció: cortar en la próxima pausa
+    @Volatile private var armadoDesde = 0L
+    private var bajosMs = 0                    // ms seguidos sin habla (solo hilo de captura)
+    private var tapadoMs = 0
+    private var satMs = 0
+    @Volatile private var avisoDado = false    // un aviso (tapado/saturado) por parte
+    @Volatile private var cortePedido = false  // evita duplicar el post de un corte
 
-    // Espera a que el nivel quede bajo ~0,5 s seguidos (silencio) y corta ahí; si no
-    // aparece una pausa en MAX_ESPERA_MS, corta igual para no demorar la entrega.
-    private val esperaSilencio = object : Runnable {
-        var bajos = 0
-        var desde = 0L
-        override fun run() {
-            val r = recorder
-            if (r == null || finalizando) return
-            val amp = try { r.maxAmplitude } catch (e: Exception) { 0 }
-            // incluir amp==0 (silencio digital total): antes lo tomaba como "no silencio"
-            // y reseteaba el contador, así una pausa muda nunca disparaba el corte.
-            if (amp < UMBRAL_SILENCIO) bajos++ else bajos = 0
-            val venció = SystemClock.elapsedRealtime() - desde > MAX_ESPERA_MS
-            if (bajos >= 3 || venció) { // 3 ventanas de 150 ms ≈ pausa de ~0,45 s
-                rotar()
-                reprogramarAuto()
-            } else {
-                handler.postDelayed(this, 150)
-            }
+    // al vencer el intervalo no se corta de una: se ARMA y el VAD elige la pausa
+    private val corteAuto = Runnable {
+        if (corriendo && !finalizando) {
+            bajosMs = 0
+            armadoDesde = SystemClock.elapsedRealtime()
+            armado = true
+            estado = "grabando parte $parte (corta en la próxima pausa)"
         }
     }
 
@@ -125,7 +117,7 @@ class RecordService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> iniciar()
-            ACTION_CUT -> if (recorder != null && !finalizando) {
+            ACTION_CUT -> if (corriendo && !finalizando) {
                 rotar()
                 reprogramarAuto()
             }
@@ -134,16 +126,13 @@ class RecordService : Service() {
             ACTION_EXIT -> salir()
             // intent null = el sistema reinició el servicio (START_STICKY) tras matarlo:
             // si había una grabación en curso, retomarla; si no, quedarse en reposo
-            // (la notificación persistente solo se va con Salir)
             else -> if (!corriendo && Prefs.sesionActiva(this).isNotEmpty()) iniciar()
                     else if (!corriendo) mostrarIdle()
         }
         return START_STICKY
     }
 
-    /** Notificación persistente en reposo (sin grabar): acciones Iniciar / Salir.
-     *  Usa el tipo dataSync porque el tipo micrófono exige el permiso de grabar,
-     *  que puede no estar dado todavía la primera vez. */
+    /** Notificación persistente en reposo (sin grabar): acciones Iniciar / Salir. */
     private fun mostrarIdle() {
         crearCanal()
         if (estado == "detenido") estado = "listo para grabar"
@@ -155,8 +144,7 @@ class RecordService : Service() {
         }
     }
 
-    /** Salir: cierra la Activity (broadcast), saca la notificación y apaga el servicio.
-     *  Grabando o subiendo no se ofrece; si igual llega, no se sale (no perder nada). */
+    /** Salir: cierra la Activity (broadcast), saca la notificación y apaga el servicio. */
     private fun salir() {
         if (corriendo) {
             estado = if (finalizando) "subiendo lo pendiente: esperá para salir"
@@ -173,7 +161,6 @@ class RecordService : Service() {
 
     private fun iniciar() {
         if (corriendo) return
-        // desde la acción Iniciar de la notificación puede no haber permiso todavía
         if (androidx.core.content.ContextCompat.checkSelfPermission(
                 this, android.Manifest.permission.RECORD_AUDIO)
             != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -195,15 +182,11 @@ class RecordService : Service() {
         arrancarUploader()
         armarBotonVolumen()
 
-        // si quedó una grabación sin terminar (la app murió a mitad de reunión) y es
-        // reciente, RETOMARLA: misma sesión, sigue la numeración y reenvía lo que no
-        // llegó a subirse, en orden. Si no, sesión nueva.
         val previa = Prefs.sesionActiva(this)
         val reciente = previa.isNotEmpty() &&
                 ultimaActividad(previa) > System.currentTimeMillis() - 6 * 3600_000L
 
-        // la app murió DESPUÉS de tocar Finalizar: NO grabar más (el usuario ya salió
-        // de la reunión), solo reenviar lo pendiente y mandar "fin".
+        // la app murió DESPUÉS de tocar Finalizar: NO grabar más, solo cerrar
         if (reciente && Prefs.estaFinalizando(this)) {
             sesion = previa
             parte = Prefs.parteActual(this)
@@ -233,9 +216,145 @@ class RecordService : Service() {
         }
         sesionId = sesion
         tTotal = System.currentTimeMillis()
-        empezarSegmento()
+        empezarCaptura()
         programarAuto()
     }
+
+    /** Crea el motor de captura (fuente + VAD) y arranca la primera parte. */
+    private fun empezarCaptura() {
+        parte++
+        val f = File(dirGrab(), "reunion_${sesion}_p" + "%03d".format(parte) + ".m4a")
+        // fuente: UNPROCESSED (100% crudo) si el usuario lo pidió y el equipo lo
+        // soporta (el S22 Ultra sí); si no, el perfil para reconocimiento de voz
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val soportaCruda =
+            am.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) == "true"
+        val fuente = if (Prefs.cruda(this) && soportaCruda)
+            MediaRecorder.AudioSource.UNPROCESSED
+        else MediaRecorder.AudioSource.VOICE_RECOGNITION
+        // VAD neuronal; si no carga, CapturaAudio cae al detector de energía
+        val vad = try { VadSilero(this) } catch (e: Exception) { null }
+        if (vad == null) estado = "grabando (corte por energía: VAD no disponible)"
+
+        armado = false
+        cortePedido = false
+        avisoDado = false
+        bajosMs = 0; tapadoMs = 0; satMs = 0
+        captura = CapturaAudio(fuente, vad, this).also { it.iniciar(f) }
+        parteN = parte
+        tParte = System.currentTimeMillis()
+        grabandoArchivo = f.name
+        Prefs.marcarSesion(this, sesion, parte)
+    }
+
+    /** Cierra la parte actual y sigue en la siguiente, sin hueco de audio. */
+    private fun rotar() {
+        val cap = captura ?: return
+        parte++
+        val f = File(dirGrab(), "reunion_${sesion}_p" + "%03d".format(parte) + ".m4a")
+        armado = false
+        cortePedido = false
+        avisoDado = false
+        cap.rotar(f)
+        parteN = parte
+        tParte = System.currentTimeMillis()
+        grabandoArchivo = f.name
+        Prefs.marcarSesion(this, sesion, parte)
+        vibrar()
+        estado = "grabando (parte $parte)"
+        notificar("Grabando parte $parte — ${pendientes()} subida(s) pendiente(s)")
+    }
+
+    private fun finalizar() {
+        if (!corriendo || finalizando) return
+        finalizando = true
+        Prefs.marcarFinalizando(this, true)  // sobrevive a que el SO mate el proceso
+        handler.removeCallbacks(corteAuto)
+        armado = false
+        estado = "cerrando la grabación..."
+        notificar(estado)
+        // detener() espera al hilo de captura: fuera del main thread
+        Thread {
+            try { captura?.detener() } catch (_: Exception) {}
+            captura = null
+            grabandoArchivo = ""
+            cola.put(Trabajo.Texto("fin"))
+            cola.put(Trabajo.Fin)
+            pendientesN = pendientes()
+            estado = "subiendo lo pendiente (${pendientes()} restante(s))..."
+            notificar(estado)
+        }.apply { isDaemon = true }.start()
+    }
+
+    // ---------- callbacks del motor de captura (hilo de captura) ----------
+
+    override fun onFrame(nivel: Int, esVoz: Boolean, saturado: Boolean) {
+        nivelN = nivel
+        hablaN = esVoz
+        if (!corriendo || finalizando) return
+
+        // tope duro por parte
+        if (!cortePedido && System.currentTimeMillis() - tParte >= TOPE_PARTE_MS) {
+            cortePedido = true
+            handler.post { if (corriendo && !finalizando) { rotar(); reprogramarAuto() } }
+            return
+        }
+        // corte armado: esperar una PAUSA DE HABLA real (VAD), con tope de espera
+        if (armado && !cortePedido) {
+            if (esVoz) bajosMs = 0 else bajosMs += 32
+            val vencio = SystemClock.elapsedRealtime() - armadoDesde > MAX_ESPERA_MS
+            if (bajosMs >= PAUSA_CORTE_MS || vencio) {
+                cortePedido = true
+                handler.post { if (corriendo && !finalizando) { rotar(); reprogramarAuto() } }
+            }
+        }
+        // diagnóstico con el PCM real: mic tapado / saturación (un aviso por parte)
+        if (nivel <= 1) tapadoMs += 32 else tapadoMs = 0
+        if (saturado) satMs += 32 else if (satMs > 0) satMs -= 8
+        if (!avisoDado) {
+            if (tapadoMs >= 10_000) {
+                avisoDado = true
+                estado = "⚠ no entra audio: ¿micrófono tapado?"
+                handler.post { notificar(estado) }
+            } else if (satMs >= 2_000) {
+                avisoDado = true
+                estado = "⚠ el audio satura: alejá el teléfono de la fuente"
+                handler.post { notificar(estado) }
+            }
+        }
+    }
+
+    override fun onParteCerrada(parte: CapturaAudio.ParteCerrada) {
+        // una parte casi sin habla no se sube: se aparta (menos datos y menos GPU)
+        if (parte.hablaMs < HABLA_MIN_MS && parte.durMs > 10_000) {
+            val destino = File(parte.file.parentFile, "silencio_" + parte.file.name)
+            parte.file.renameTo(destino)
+            pendientesN = pendientes()
+            return
+        }
+        if (parte.file.length() > 2000) {
+            cola.put(Trabajo.Audio(parte.file))
+        } else {
+            parte.file.delete()  // vacía/corrupta: que no la reencole una retoma
+        }
+        pendientesN = pendientes()
+    }
+
+    override fun onError(msg: String) {
+        estado = "ERROR captura: $msg (reintentando)"
+        handler.post {
+            notificar(estado)
+            captura = null
+            parte--   // el intento fallido no consume número de parte
+            if (corriendo && !finalizando) {
+                handler.postDelayed({
+                    if (corriendo && captura == null && !finalizando) empezarCaptura()
+                }, 4000)
+            }
+        }
+    }
+
+    // ---------- helpers de sesión / archivos ----------
 
     private fun ultimaActividad(ses: String): Long =
         dirGrab().listFiles { f -> f.name.contains(ses) }
@@ -248,17 +367,19 @@ class RecordService : Service() {
             ?.forEach { cola.put(Trabajo.Audio(it)) }
     }
 
-    /** Partes sin subir de sesiones viejas: se apartan (no van a una reunión nueva). */
+    /** Partes de sesiones viejas: se apartan (no van a una reunión nueva). */
     private fun archivarHuerfanas() {
         val huer = File(dirGrab(), "huerfanas").apply { mkdirs() }
-        dirGrab().listFiles { f -> f.isFile && f.name.startsWith("reunion_") }
-            ?.forEach { it.renameTo(File(huer, it.name)) }
+        dirGrab().listFiles { f ->
+            f.isFile && (f.name.startsWith("reunion_") || f.name.startsWith("silencio_"))
+        }?.forEach { it.renameTo(File(huer, it.name)) }
     }
 
+    private fun dirGrab() = File(getExternalFilesDir(null), "grabaciones").apply { mkdirs() }
+
     /**
-     * MediaSession con volumen "remoto": mientras se graba, las teclas de volumen
-     * llegan a onAdjustVolume aunque la pantalla esté bloqueada. Bajar volumen =
-     * cortar y enviar (con vibración como confirmación). Subir volumen se ignora.
+     * MediaSession con volumen "remoto": mientras se graba, BAJAR VOLUMEN con la
+     * pantalla bloqueada = cortar y enviar (vibra como confirmación).
      */
     private fun armarBotonVolumen() {
         val ms = MediaSessionCompat(this, "grabador")
@@ -274,7 +395,7 @@ class RecordService : Service() {
                 if (ahora - ultimoCorteVol < 3000) return   // anti-rebote (auto-repeat)
                 ultimoCorteVol = ahora
                 handler.post {
-                    if (recorder != null && !finalizando) {
+                    if (corriendo && !finalizando) {
                         rotar()
                         reprogramarAuto()
                     }
@@ -296,110 +417,6 @@ class RecordService : Service() {
             v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
         } catch (e: Exception) {
         }
-    }
-
-    private fun dirGrab() = File(getExternalFilesDir(null), "grabaciones").apply { mkdirs() }
-
-    private fun empezarSegmento() {
-        parte++
-        val f = File(dirGrab(), "reunion_${sesion}_p" + "%03d".format(parte) + ".m4a")
-        val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this)
-        else @Suppress("DEPRECATION") MediaRecorder()
-        try {
-            // VOICE_RECOGNITION: perfil de captura pensado para ASR (sin el recorte de
-            // banda telefónico y con procesamiento menos agresivo que MIC); es
-            // exactamente lo que Whisper quiere como entrada.
-            r.setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
-            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            r.setAudioChannels(1)
-            // 48 kHz / 128 kbps: conserva mejor consonantes y voces lejanas que
-            // 44.1k/96k; una parte de 1 min sigue pesando ~1 MB.
-            r.setAudioSamplingRate(48000)
-            r.setAudioEncodingBitRate(128000)
-            r.setOutputFile(f.absolutePath)
-            if (Build.VERSION.SDK_INT >= 29) {
-                // teléfonos con varios micrófonos (S22 Ultra: 3): pedir campo de
-                // captación AMPLIO, para una reunión alrededor de una mesa en vez de
-                // una sola voz pegada al teléfono. Si el equipo no lo soporta, es no-op.
-                try {
-                    r.setPreferredMicrophoneDirection(
-                        android.media.MicrophoneDirection.MIC_DIRECTION_UNSPECIFIED)
-                    r.setPreferredMicrophoneFieldDimension(-1.0f)  // -1 = lo más amplio
-                } catch (_: Exception) {}
-            }
-            // tope duro por parte: si el intervalo automático está apagado, evita que
-            // un segmento crezca sin límite y Telegram lo rechace con 413.
-            r.setMaxDuration(TOPE_PARTE_MS)
-            r.setOnInfoListener { _, what, _ ->
-                if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
-                    handler.post {
-                        if (recorder != null && !finalizando) { rotar(); reprogramarAuto() }
-                    }
-                }
-            }
-            r.prepare()
-            r.start()
-        } catch (e: Exception) {
-            // mic ocupado por otra app / permiso revocado: NO crashear (evita el bucle
-            // de reinicio de START_STICKY). Mostrar el error y reintentar en unos segundos.
-            try { r.release() } catch (_: Exception) {}
-            recorder = null
-            parte--   // el intento fallido no consume número de parte
-            estado = "ERROR micrófono: ${e.message ?: "no disponible"} (reintentando)"
-            notificar(estado)
-            if (!finalizando) handler.postDelayed({
-                if (corriendo && recorder == null && !finalizando) empezarSegmento()
-            }, 4000)
-            return
-        }
-        recorder = r
-        archivoActual = f
-        parteN = parte
-        tParte = System.currentTimeMillis()
-        grabandoArchivo = f.name
-        Prefs.marcarSesion(this, sesion, parte)
-    }
-
-    private fun pararSegmento(): File? {
-        val r = recorder ?: return null
-        val f = archivoActual
-        recorder = null
-        archivoActual = null
-        grabandoArchivo = ""
-        try { r.stop() } catch (e: Exception) { } finally { r.release() }
-        if (f == null) return null
-        // stop() puede fallar tanto por un segmento vacío/corrupto como porque el tope
-        // de duración ya cerró el archivo. Distinguir por tamaño: si tiene contenido
-        // real, conservarlo; si no, BORRARLO para que reencolarPendientes no lo resuba.
-        if (f.length() > 2000) return f
-        f.delete()
-        return null
-    }
-
-    private fun rotar() {
-        val f = pararSegmento()
-        if (!finalizando) empezarSegmento()
-        if (f != null && f.length() > 0) cola.put(Trabajo.Audio(f))
-        pendientesN = pendientes()
-        vibrar()
-        estado = "grabando (parte $parte)"
-        notificar("Grabando parte $parte — $pendientesN subida(s) pendiente(s)")
-    }
-
-    private fun finalizar() {
-        if (!corriendo || finalizando) return
-        finalizando = true
-        Prefs.marcarFinalizando(this, true)  // sobrevive a que el SO mate el proceso a mitad
-        handler.removeCallbacks(corteAuto)
-        handler.removeCallbacks(esperaSilencio)
-        val f = pararSegmento()
-        if (f != null && f.length() > 0) cola.put(Trabajo.Audio(f))
-        cola.put(Trabajo.Texto("fin"))
-        cola.put(Trabajo.Fin)
-        pendientesN = pendientes()
-        estado = "subiendo lo pendiente ($pendientesN restante(s))..."
-        notificar(estado)
     }
 
     private fun pendientes() = cola.count { it is Trabajo.Audio }
@@ -432,7 +449,6 @@ class RecordService : Service() {
                             Thread.sleep(if (intento > 12) 60_000L else 5_000L * intento)
                         }
                         if (permanente) {
-                            // apartar el archivo y seguir la cola (no bloquear el "fin")
                             t.f.renameTo(File(t.f.parentFile, "fallo_" + t.f.name))
                             estado = "ERROR al subir ${t.f.name}: revisá token, chat id o tamaño"
                             notificar(estado)
@@ -475,6 +491,7 @@ class RecordService : Service() {
         estado = "listo: todo enviado, la PC está procesando"
         corriendo = false
         uploaderActivo = false
+        nivelN = 0
         Prefs.limpiarSesion(this)
         mediaSession?.release()
         mediaSession = null
@@ -494,7 +511,6 @@ class RecordService : Service() {
 
     private fun reprogramarAuto() {
         handler.removeCallbacks(corteAuto)
-        handler.removeCallbacks(esperaSilencio)
         programarAuto()
     }
 
@@ -528,11 +544,10 @@ class RecordService : Service() {
             b.addAction(0, "⏹ Finalizar", piFin)
             b.addAction(0, "✂ Cortar", piCortar)
         } else {
-            // reposo (sin iniciar o ya finalizada): Iniciar + Salir
+            // reposo (sin iniciar o ya finalizada): Iniciar + Salir (con confirmación)
             val piIniciar = PendingIntent.getService(
                 this, 3, Intent(this, RecordService::class.java).setAction(ACTION_START),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-            // salir pide confirmación: abre la app con el diálogo (igual que Finalizar)
             val piSalir = PendingIntent.getActivity(
                 this, 4,
                 Intent(this, MainActivity::class.java)
@@ -551,10 +566,10 @@ class RecordService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacks(corteAuto)
-        handler.removeCallbacks(esperaSilencio)
         uploaderActivo = false        // frenar el hilo de subidas (evita hilos huérfanos)
         uploader?.interrupt()
-        pararSegmento()
+        captura?.abortar()
+        captura = null
         mediaSession?.release()
         mediaSession = null
         try { wakeLock?.release() } catch (e: Exception) { }

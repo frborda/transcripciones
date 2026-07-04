@@ -32,6 +32,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvTimer: TextView
     private lateinit var tvPartes: TextView
     private lateinit var dotEstado: View
+    private lateinit var pbNivel: com.google.android.material.progressindicator.LinearProgressIndicator
 
     // el Salir de la notificación también cierra esta pantalla
     private val salirReceiver = object : BroadcastReceiver() {
@@ -46,15 +47,19 @@ class MainActivity : AppCompatActivity() {
             if (RecordService.corriendo) {
                 val ahora = System.currentTimeMillis()
                 tvTimer.text = "parte ${fmtSeg((ahora - RecordService.tParte) / 1000)}" +
-                        "  ·  total ${fmtSeg((ahora - RecordService.tTotal) / 1000)}"
+                        "  ·  total ${fmtSeg((ahora - RecordService.tTotal) / 1000)}" +
+                        (if (RecordService.hablaN) "  ·  🗣" else "")
                 tvTimer.visibility = View.VISIBLE
+                pbNivel.visibility = View.VISIBLE
+                pbNivel.setProgressCompat(RecordService.nivelN, true)
             } else {
                 tvTimer.visibility = View.GONE
+                pbNivel.visibility = View.GONE
             }
             dotEstado.backgroundTintList = ColorStateList.valueOf(
                 ContextCompat.getColor(this@MainActivity, colorEstado(est)))
             tvPartes.text = listaPartes()
-            handler.postDelayed(this, 1000)
+            handler.postDelayed(this, 250)
         }
     }
 
@@ -77,7 +82,8 @@ class MainActivity : AppCompatActivity() {
         if (ses.isEmpty()) return "(sin sesión todavía)"
         val dir = File(getExternalFilesDir(null), "grabaciones")
         val files = dir.listFiles { f -> f.name.contains("reunion_${ses}_p") }
-            ?.sortedBy { it.name.removePrefix("ok_") } ?: emptyList()
+            ?.sortedBy { it.name.removePrefix("ok_").removePrefix("silencio_").removePrefix("fallo_") }
+            ?: emptyList()
         if (files.isEmpty()) return "(sin partes todavía)"
         val sb = StringBuilder()
         var enviadas = 0
@@ -86,6 +92,8 @@ class MainActivity : AppCompatActivity() {
             val mb = "%.1f".format(f.length() / 1048576.0)
             val st = when {
                 f.name.startsWith("ok_") -> { enviadas++; "✅ enviada" }
+                f.name.startsWith("silencio_") -> "🔇 sin habla (no se sube)"
+                f.name.startsWith("fallo_") -> "⛔ falló (ver token/chat)"
                 f.name == RecordService.grabandoArchivo -> "🎙 grabando..."
                 f.name == RecordService.subiendoAhora -> "⬆ subiendo..."
                 else -> "📦 pendiente"
@@ -105,6 +113,7 @@ class MainActivity : AppCompatActivity() {
         tvTimer = findViewById(R.id.tvTimer)
         tvPartes = findViewById(R.id.tvPartes)
         dotEstado = findViewById(R.id.dotEstado)
+        pbNivel = findViewById(R.id.pbNivel)
 
         findViewById<Button>(R.id.btnIniciar).setOnClickListener { iniciar() }
         findViewById<Button>(R.id.btnCortar).setOnClickListener { servicio(RecordService.ACTION_CUT) }
@@ -175,11 +184,13 @@ class MainActivity : AppCompatActivity() {
         val etChat = v.findViewById<EditText>(R.id.etChat)
         val etIntervalo = v.findViewById<EditText>(R.id.etIntervalo)
         val swAuto = v.findViewById<CompoundButton>(R.id.swAuto)
+        val swCruda = v.findViewById<CompoundButton>(R.id.swCruda)
 
         etToken.setText(Prefs.token(this))
         etChat.setText(Prefs.chatId(this))
         etIntervalo.setText(Prefs.fmtHms(Prefs.intervaloSeg(this)))
         swAuto.isChecked = Prefs.auto(this)
+        swCruda.isChecked = Prefs.cruda(this)
 
         v.findViewById<View>(R.id.btnDetectar).setOnClickListener {
             val token = etToken.text.toString().trim()
@@ -211,7 +222,8 @@ class MainActivity : AppCompatActivity() {
                     etToken.text.toString().trim(),
                     etChat.text.toString().trim(),
                     Prefs.parseHms(etIntervalo.text.toString()),
-                    swAuto.isChecked)
+                    swAuto.isChecked,
+                    swCruda.isChecked)
                 toast("Configuración guardada")
             }
             .setNegativeButton("Cancelar", null)

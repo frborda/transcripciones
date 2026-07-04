@@ -1,0 +1,272 @@
+package com.fer.grabador
+
+import android.annotation.SuppressLint
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+import android.media.MediaMuxer
+import java.io.File
+import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sqrt
+
+/**
+ * Motor de captura: AudioRecord (PCM real) + encoder AAC propio + VAD por frame.
+ *
+ * Ventajas sobre MediaRecorder:
+ *  - El encoder vive toda la sesión y las PARTES son solo un cambio de MediaMuxer:
+ *    rotar no pierde audio (antes había ~200 ms de hueco por reinicio).
+ *  - PCM accesible: nivel RMS fiel, detección de saturación/mic tapado, y VAD
+ *    neuronal (Silero) que distingue HABLA de "hay energía".
+ *  - Fuente configurable (VOICE_RECOGNITION / UNPROCESSED).
+ *
+ * Todo corre en un hilo propio; los callbacks del listener llegan desde ese hilo.
+ */
+class CapturaAudio(
+    private val fuente: Int,
+    private val vad: VadSilero?,          // null → detector de energía adaptativo
+    private val listener: Listener,
+) {
+    interface Listener {
+        /** Cada 32 ms: nivel 0..100, si hay habla y si el pico está saturando. */
+        fun onFrame(nivel: Int, esVoz: Boolean, saturado: Boolean)
+        /** Una parte quedó cerrada en disco (por rotación o al detener). */
+        fun onParteCerrada(parte: ParteCerrada)
+        fun onError(msg: String)
+    }
+
+    data class ParteCerrada(val file: File, val durMs: Long, val hablaMs: Long)
+
+    companion object {
+        const val SR = 48000
+        const val FRAME = 1536          // 32 ms a 48 kHz (→ 512 a 16 kHz para el VAD)
+        const val BITRATE = 128000
+    }
+
+    @Volatile private var corriendo = false
+    @Volatile private var pedidoParar = false
+    private val pedidoRotar = AtomicReference<File?>(null)
+    private var hilo: Thread? = null
+
+    // detector de energía adaptativo (fallback sin VAD): piso de ruido con EMA
+    private var pisoRuido = 150.0
+
+    fun iniciar(primerArchivo: File) {
+        if (corriendo) return
+        corriendo = true
+        pedidoParar = false
+        vad?.reset()
+        hilo = Thread({ loop(primerArchivo) }, "captura-audio").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    /** Pide cerrar la parte actual y seguir grabando en 'siguiente' (sin hueco).
+     *  La parte cerrada llega por onParteCerrada. */
+    fun rotar(siguiente: File) {
+        pedidoRotar.set(siguiente)
+    }
+
+    /** Cierra la parte actual y detiene todo. Espera al hilo (la última parte
+     *  también sale por onParteCerrada antes de retornar). */
+    fun detener() {
+        pedidoParar = true
+        hilo?.join(5000)
+        hilo = null
+        corriendo = false
+    }
+
+    /** Corte abrupto (onDestroy): no espera; el hilo cierra lo mejor que pueda. */
+    fun abortar() {
+        pedidoParar = true
+        corriendo = false
+    }
+
+    // ---------------- hilo de captura ----------------
+
+    @SuppressLint("MissingPermission")  // el servicio valida RECORD_AUDIO antes
+    private fun loop(primerArchivo: File) {
+        var audio: AudioRecord? = null
+        var codec: MediaCodec? = null
+        var muxer: MediaMuxer? = null
+        var pista = -1
+        var formatoSalida: MediaFormat? = null
+        var archivoActual = primerArchivo
+        var ptsBase = -1L                 // rebase de pts por archivo (cada .m4a arranca en ~0)
+        var ultimoPtsEscrito = -1L
+        var framesParte = 0L              // duración de la parte en frames de 32 ms
+        var hablaMsParte = 0L
+        var muestrasTotales = 0L
+
+        fun cerrarParte() {
+            try { muxer?.stop() } catch (_: Exception) {}
+            try { muxer?.release() } catch (_: Exception) {}
+            muxer = null
+            listener.onParteCerrada(ParteCerrada(archivoActual, framesParte * 32, hablaMsParte))
+            framesParte = 0
+            hablaMsParte = 0
+        }
+
+        fun abrirParte(f: File) {
+            muxer = MediaMuxer(f.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            archivoActual = f
+            ptsBase = -1L
+            ultimoPtsEscrito = -1L
+            formatoSalida?.let { fmt ->
+                pista = muxer!!.addTrack(fmt)
+                muxer!!.start()
+            }
+        }
+
+        fun drenar(codecArg: MediaCodec, hastaEos: Boolean) {
+            val info = MediaCodec.BufferInfo()
+            while (true) {
+                val idx = codecArg.dequeueOutputBuffer(info, if (hastaEos) 10_000L else 0L)
+                when {
+                    idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        formatoSalida = codecArg.outputFormat
+                        // primer archivo: la pista recién se puede crear ahora
+                        if (muxer != null && pista < 0) {
+                            pista = muxer!!.addTrack(formatoSalida!!)
+                            muxer!!.start()
+                        }
+                    }
+                    idx >= 0 -> {
+                        val buf = codecArg.getOutputBuffer(idx)!!
+                        val esConfig = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
+                        if (!esConfig && info.size > 0 && muxer != null && pista >= 0) {
+                            if (ptsBase < 0) ptsBase = info.presentationTimeUs
+                            var pts = info.presentationTimeUs - ptsBase
+                            if (pts <= ultimoPtsEscrito) pts = ultimoPtsEscrito + 1
+                            ultimoPtsEscrito = pts
+                            val infoLocal = MediaCodec.BufferInfo().apply {
+                                set(info.offset, info.size, pts, info.flags)
+                            }
+                            muxer!!.writeSampleData(pista, buf, infoLocal)
+                        }
+                        codecArg.releaseOutputBuffer(idx, false)
+                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
+                    }
+                    else -> if (!hastaEos) return  // TRY_AGAIN sin EOS pendiente: listo
+                }
+            }
+        }
+
+        try {
+            val minBuf = AudioRecord.getMinBufferSize(
+                SR, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            audio = AudioRecord(fuente, SR, AudioFormat.CHANNEL_IN_MONO,
+                                AudioFormat.ENCODING_PCM_16BIT, max(minBuf, SR))  // buffer ~1 s
+            if (audio.state != AudioRecord.STATE_INITIALIZED)
+                throw IllegalStateException("AudioRecord no inicializó (¿mic ocupado?)")
+
+            val fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, SR, 1).apply {
+                setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                setInteger(MediaFormat.KEY_BIT_RATE, BITRATE)
+                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, FRAME * 2)
+            }
+            codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+            codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            codec.start()
+            audio.startRecording()
+            abrirParte(primerArchivo)
+
+            val pcm = ShortArray(FRAME)
+            val chunkVad = FloatArray(VadSilero.CHUNK)
+            var vadRoto = vad == null
+
+            while (!pedidoParar) {
+                // leer un frame completo (32 ms)
+                var leidas = 0
+                while (leidas < FRAME && !pedidoParar) {
+                    val n = audio.read(pcm, leidas, FRAME - leidas)
+                    if (n < 0) throw IllegalStateException("AudioRecord.read=$n")
+                    leidas += n
+                }
+                if (pedidoParar) break
+
+                // métricas del PCM real
+                var suma = 0.0
+                var pico = 0
+                for (s in pcm) {
+                    val v = s.toInt()
+                    suma += (v * v).toDouble()
+                    val a = if (v < 0) -v else v
+                    if (a > pico) pico = a
+                }
+                val rms = sqrt(suma / FRAME)
+                val nivel = min(100, (rms * 100 / 8000).toInt())
+                val saturado = pico >= 32200
+
+                // VAD: decimar 48k→16k (promedio de a 3) y preguntar por HABLA
+                var esVoz: Boolean
+                if (!vadRoto) {
+                    var j = 0
+                    var i = 0
+                    while (j < VadSilero.CHUNK) {
+                        chunkVad[j] = (pcm[i] + pcm[i + 1] + pcm[i + 2]) / (3f * 32768f)
+                        i += 3; j++
+                    }
+                    esVoz = try {
+                        vad!!.esVoz(chunkVad)
+                    } catch (e: Exception) {
+                        vadRoto = true  // el modelo falló en runtime: energía para siempre
+                        esVozPorEnergia(rms)
+                    }
+                } else {
+                    esVoz = esVozPorEnergia(rms)
+                }
+                framesParte++
+                if (esVoz) hablaMsParte += 32
+                listener.onFrame(nivel, esVoz, saturado)
+
+                // encolar el PCM al encoder
+                val idx = codec.dequeueInputBuffer(10_000L)
+                if (idx >= 0) {
+                    val bb: ByteBuffer = codec.getInputBuffer(idx)!!
+                    bb.clear()
+                    for (s in pcm) { bb.putShort(s) }
+                    val ptsUs = muestrasTotales * 1_000_000L / SR
+                    codec.queueInputBuffer(idx, 0, FRAME * 2, ptsUs, 0)
+                    muestrasTotales += FRAME
+                }
+                drenar(codec, hastaEos = false)
+
+                // rotación pedida: cerrar la parte y abrir la siguiente (el encoder sigue)
+                pedidoRotar.getAndSet(null)?.let { siguiente ->
+                    cerrarParte()
+                    abrirParte(siguiente)
+                }
+            }
+
+            // fin: EOS al encoder, drenar lo pendiente y cerrar la última parte
+            val idx = codec.dequeueInputBuffer(50_000L)
+            if (idx >= 0) {
+                codec.queueInputBuffer(idx, 0, 0,
+                    muestrasTotales * 1_000_000L / SR, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                drenar(codec, hastaEos = true)
+            }
+            cerrarParte()
+        } catch (e: Exception) {
+            try { muxer?.release() } catch (_: Exception) {}
+            listener.onError(e.message ?: e.javaClass.simpleName)
+        } finally {
+            try { audio?.stop() } catch (_: Exception) {}
+            try { audio?.release() } catch (_: Exception) {}
+            try { codec?.stop() } catch (_: Exception) {}
+            try { codec?.release() } catch (_: Exception) {}
+            corriendo = false
+        }
+    }
+
+    /** Fallback sin VAD: energía contra un piso de ruido adaptativo (EMA). */
+    private fun esVozPorEnergia(rms: Double): Boolean {
+        if (rms < pisoRuido * 2) pisoRuido = 0.95 * pisoRuido + 0.05 * rms
+        return rms > max(pisoRuido * 3, 300.0)
+    }
+}
