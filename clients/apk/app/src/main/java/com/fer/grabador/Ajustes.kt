@@ -21,7 +21,7 @@ object Ajustes {
 
     val umbralVad: Float get() = 0.20f + 0.40f * (supresion / 100f)
     val capNorm: Float
-        get() = (64.0 * Math.pow(4.0 / 64.0, supresion / 100.0)).toFloat()  // 64→16→4
+        get() = (256.0 * Math.pow(4.0 / 256.0, supresion / 100.0)).toFloat()  // 256→32→4
     val nsDeseado: Boolean get() = supresion >= 15
 
     fun cargar(c: Context) {

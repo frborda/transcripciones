@@ -93,6 +93,11 @@ class CapturaAudio(
     @Volatile var probVoz = 0f
         private set
 
+    // suavizado de la probabilidad: ataque instantáneo, caída ~200 ms. La voz
+    // LEJANA/reverberante hace fluctuar a Silero entre sílabas; sin puentear esos
+    // huecos hay que hablar fuerte para sostener la detección.
+    private var probSuave = 0f
+
     fun iniciar(primerArchivo: File) {
         if (corriendo) return
         corriendo = true
@@ -342,8 +347,9 @@ class CapturaAudio(
                     }
                     esVoz = try {
                         val p = vad!!.prob(chunkVad)
-                        probVoz = p
-                        p >= Ajustes.umbralVad
+                        probSuave = if (p > probSuave) p else probSuave * 0.85f
+                        probVoz = probSuave
+                        probSuave >= Ajustes.umbralVad
                     } catch (e: Exception) {
                         vadRoto = true  // el modelo falló en runtime: energía para siempre
                         usandoVad = false
