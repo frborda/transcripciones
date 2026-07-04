@@ -19,6 +19,13 @@ object Prefs {
     fun supresion(c: Context): Int = sp(c).getInt("supresion", 50)
     fun setSupresion(c: Context, v: Int) = sp(c).edit().putInt("supresion", v).apply()
 
+    // Ecualizador de captura (dB por banda); lo fija el diálogo de EQ o el modo auto
+    fun eqG(c: Context): Float = sp(c).getFloat("eq_g", 0f)
+    fun eqM(c: Context): Float = sp(c).getFloat("eq_m", 0f)
+    fun eqP(c: Context): Float = sp(c).getFloat("eq_p", 0f)
+    fun setEq(c: Context, g: Float, m: Float, p: Float) =
+        sp(c).edit().putFloat("eq_g", g).putFloat("eq_m", m).putFloat("eq_p", p).apply()
+
     fun guardar(c: Context, token: String, chatId: String, intervaloSeg: Int, auto: Boolean,
                 cruda: Boolean = false, ns: Boolean = true, eco: Boolean = false) {
         sp(c).edit()

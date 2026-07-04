@@ -53,6 +53,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         const val ACTION_SHOW = "com.fer.grabador.SHOW"    // notificación persistente (reposo)
         const val ACTION_EXIT = "com.fer.grabador.EXIT"    // salir: cierra app y notificación
         const val ACTION_TEST = "com.fer.grabador.TEST"    // prueba de mic (no graba ni sube)
+        const val ACTION_EQ_AUTO = "com.fer.grabador.EQ_AUTO"  // busca la mejor EQ (toggle)
         const val BC_SALIR = "com.fer.grabador.BC_SALIR"   // broadcast para cerrar la Activity
         const val CANAL = "grabacion"
 
@@ -86,6 +87,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         @Volatile var ganN = 1.0           // ganancia digital aplicada, para la prueba
         @Volatile var probN = 0f           // probabilidad de voz de Silero (en vivo)
         @Volatile var calidadN = -1        // claridad de la voz 0..100 (-1 sin datos)
+        @Volatile var eqAutoEstado = ""    // progreso del auto-EQ ("" = apagado)
     }
 
     private sealed class Trabajo {
@@ -139,6 +141,7 @@ class RecordService : Service(), CapturaAudio.Listener {
             ACTION_EXIT -> salir()
             ACTION_TEST -> if (probando) detenerTest(null)
                            else if (!corriendo) empezarTest()
+            ACTION_EQ_AUTO -> toggleEqAuto()
             // intent null = el sistema reinició el servicio (START_STICKY) tras matarlo:
             // si había una grabación en curso, retomarla; si no, quedarse en reposo
             else -> if (!corriendo && Prefs.sesionActiva(this).isNotEmpty()) iniciar()
@@ -174,6 +177,125 @@ class RecordService : Service(), CapturaAudio.Listener {
         sendBroadcast(Intent(BC_SALIR).setPackage(packageName))
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    // ---------- ecualización automática: prueba curvas y fija la mejor ----------
+    //
+    // FASE 1 recorre 7 curvas típicas (búsqueda gruesa); FASE 2 refina la
+    // ganadora banda por banda de a ±3 dB; FASE 3 de a ±1,5 dB. Cada candidata
+    // se evalúa con el índice de claridad sobre ~2-3 s de HABLA real (la
+    // ventana se vacía al cambiar de curva). Al terminar, la ganadora queda
+    // FIJA y persistida hasta que se vuelva a lanzar. La ganadora de cada fase
+    // se RE-mide al abrir la siguiente: lo que se habló cambia entre curvas y
+    // comparar contra un puntaje viejo sesgaría la búsqueda.
+
+    private data class Curva(val g: Float, val m: Float, val p: Float) {
+        override fun toString() = "graves %+.1f · medios %+.1f · presencia %+.1f".format(g, m, p)
+    }
+
+    private val eqPresets = listOf(
+        Curva(0f, 0f, 0f),      // plano
+        Curva(-8f, 0f, 0f),     // anti-retumbe
+        Curva(0f, -6f, 0f),     // anti-caja (eco de sala)
+        Curva(0f, 0f, 6f),      // presencia
+        Curva(-4f, -4f, 6f),    // voz lejana
+        Curva(-6f, -3f, 3f),    // sala viva
+        Curva(0f, -3f, 9f),     // máxima inteligibilidad
+    )
+
+    @Volatile private var eqFase = 0          // 0 = apagado; 1..3 = buscando
+    private var eqCandidatas = listOf<Curva>()
+    private var eqIdx = 0
+    private var eqMejor = Curva(0f, 0f, 0f)
+    private var eqMejorScore = -1
+    private var eqCandidataDesde = 0L
+    private var eqInicioAuto = 0L
+
+    private val eqTick = object : Runnable {
+        override fun run() {
+            pasoEqAuto()
+            if (eqFase > 0) handler.postDelayed(this, 500)
+        }
+    }
+
+    private fun toggleEqAuto() {
+        if (eqFase > 0) { terminarEqAuto(); return }  // segundo toque: fija la mejor ya
+        if (!corriendo && !probando) empezarTest()
+        if (captura == null) return  // sin permiso de mic: empezarTest ya avisó
+        if (probando) {  // darle aire a la búsqueda completa (~2 min hablando)
+            handler.removeCallbacks(testTimeout)
+            handler.postDelayed(testTimeout, 300_000)
+        }
+        eqInicioAuto = SystemClock.elapsedRealtime()
+        eqMejor = Curva(Ajustes.eqGraves, Ajustes.eqMedios, Ajustes.eqPresencia)
+        eqMejorScore = -1
+        eqFase = 1
+        eqCandidatas = eqPresets
+        eqIdx = 0
+        aplicarCandidata(eqCandidatas[0])
+        handler.removeCallbacks(eqTick)
+        handler.postDelayed(eqTick, 500)
+    }
+
+    private fun aplicarCandidata(c: Curva) {
+        Ajustes.eqGraves = c.g
+        Ajustes.eqMedios = c.m
+        Ajustes.eqPresencia = c.p
+        captura?.reiniciarCalidad()
+        eqCandidataDesde = SystemClock.elapsedRealtime()
+    }
+
+    private fun pasoEqAuto() {
+        if (eqFase <= 0) return
+        val ahora = SystemClock.elapsedRealtime()
+        // la captura se cerró (fin de prueba/grabación) o pasaron 6 min: cerrar
+        if (captura == null || ahora - eqInicioAuto > 6 * 60_000L) {
+            terminarEqAuto(); return
+        }
+        eqAutoEstado = "EQ auto · fase $eqFase/3 · curva ${eqIdx + 1}/${eqCandidatas.size} · hablá normal"
+        // cada curva necesita ~2 s de habla acumulada (calidad != -1) y un
+        // mínimo de 3 s corriendo (que el habla sea DE esta curva)
+        val score = calidadN
+        if (score < 0 || ahora - eqCandidataDesde < 3000) return
+        if (score > eqMejorScore) {
+            eqMejorScore = score
+            eqMejor = eqCandidatas[eqIdx]
+        }
+        eqIdx++
+        if (eqIdx < eqCandidatas.size) {
+            aplicarCandidata(eqCandidatas[eqIdx])
+            return
+        }
+        when (eqFase) {  // fase terminada: refinar alrededor de la ganadora
+            1 -> { eqFase = 2; eqCandidatas = vecinos(eqMejor, 3f) }
+            2 -> { eqFase = 3; eqCandidatas = vecinos(eqMejor, 1.5f) }
+            else -> { terminarEqAuto(); return }
+        }
+        eqIdx = 0
+        eqMejorScore = -1  // re-medir la ganadora (candidata 0) como línea de base
+        aplicarCandidata(eqCandidatas[0])
+    }
+
+    /** La ganadora misma + cada banda ±paso (hill-climb de una pasada). */
+    private fun vecinos(c: Curva, paso: Float): List<Curva> {
+        fun cl(v: Float) = v.coerceIn(-12f, 12f)
+        return listOf(
+            c,
+            c.copy(g = cl(c.g - paso)), c.copy(g = cl(c.g + paso)),
+            c.copy(m = cl(c.m - paso)), c.copy(m = cl(c.m + paso)),
+            c.copy(p = cl(c.p - paso)), c.copy(p = cl(c.p + paso)),
+        ).distinct()
+    }
+
+    /** Fija la mejor curva encontrada (o deja la actual si no se midió nada). */
+    private fun terminarEqAuto() {
+        handler.removeCallbacks(eqTick)
+        eqFase = 0
+        eqAutoEstado = ""
+        aplicarCandidata(eqMejor)
+        Prefs.setEq(this, eqMejor.g, eqMejor.m, eqMejor.p)
+        estado = if (eqMejorScore >= 0) "EQ fija: $eqMejor (claridad $eqMejorScore)"
+                 else "EQ sin cambios: no hubo habla para medir"
     }
 
     // ---------- modo prueba: barra y detección en vivo, sin grabar ni subir ----------
@@ -699,6 +821,9 @@ class RecordService : Service(), CapturaAudio.Listener {
     override fun onDestroy() {
         handler.removeCallbacks(corteAuto)
         handler.removeCallbacks(testTimeout)
+        handler.removeCallbacks(eqTick)
+        eqFase = 0
+        eqAutoEstado = ""
         probando = false
         uploaderActivo = false        // frenar el hilo de subidas (evita hilos huérfanos)
         uploader?.interrupt()

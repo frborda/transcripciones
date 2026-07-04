@@ -197,6 +197,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnConfig).setOnClickListener { abrirConfig() }
         findViewById<ImageButton>(R.id.btnSalir).setOnClickListener { salir() }
         findViewById<ImageButton>(R.id.btnEscuchar).setOnClickListener { abrirPartes() }
+        findViewById<Button>(R.id.btnEq).setOnClickListener { abrirEq() }
         btnTest.setOnClickListener { probarMic() }
 
         ContextCompat.registerReceiver(this, salirReceiver,
@@ -237,6 +238,76 @@ class MainActivity : AppCompatActivity() {
         }
         ContextCompat.startForegroundService(
             this, Intent(this, RecordService::class.java).setAction(RecordService.ACTION_TEST))
+    }
+
+    /** Ecualizador del micrófono: 3 bandas a mano, o búsqueda automática que
+     *  prueba curvas midiendo la claridad y deja fija la mejor. */
+    private fun abrirEq() {
+        val v = layoutInflater.inflate(R.layout.dialog_eq, null)
+        val tvEstadoEq = v.findViewById<TextView>(R.id.tvEqEstado)
+        val tG = v.findViewById<TextView>(R.id.tvEqG)
+        val tM = v.findViewById<TextView>(R.id.tvEqM)
+        val tP = v.findViewById<TextView>(R.id.tvEqP)
+        val sG = v.findViewById<com.google.android.material.slider.Slider>(R.id.slEqG)
+        val sM = v.findViewById<com.google.android.material.slider.Slider>(R.id.slEqM)
+        val sP = v.findViewById<com.google.android.material.slider.Slider>(R.id.slEqP)
+        val btnAuto = v.findViewById<Button>(R.id.btnEqAuto)
+
+        // el auto redondea a 0,5 (paso de los sliders); por si acaso, siempre
+        fun aSlider(x: Float) = (Math.round(x * 2f) / 2f).coerceIn(-12f, 12f)
+        fun pintar() {
+            val enAuto = RecordService.eqAutoEstado.isNotEmpty()
+            sG.value = aSlider(Ajustes.eqGraves)
+            sM.value = aSlider(Ajustes.eqMedios)
+            sP.value = aSlider(Ajustes.eqPresencia)
+            tG.text = "graves    %+5.1f".format(Ajustes.eqGraves)
+            tM.text = "medios    %+5.1f".format(Ajustes.eqMedios)
+            tP.text = "presencia %+5.1f".format(Ajustes.eqPresencia)
+            sG.isEnabled = !enAuto; sM.isEnabled = !enAuto; sP.isEnabled = !enAuto
+            btnAuto.text = if (enAuto) "Detener y fijar la mejor" else "Ecualización automática"
+            tvEstadoEq.text = if (enAuto) RecordService.eqAutoEstado
+            else {
+                val cal = RecordService.calidadN
+                "curva actual · " + (if (cal >= 0) "claridad $cal" else "claridad --")
+            }
+        }
+        val manual = com.google.android.material.slider.Slider.OnChangeListener { _, _, fromUser ->
+            if (fromUser) {
+                Ajustes.eqGraves = sG.value
+                Ajustes.eqMedios = sM.value
+                Ajustes.eqPresencia = sP.value
+                Prefs.setEq(this, sG.value, sM.value, sP.value)
+                pintar()
+            }
+        }
+        sG.addOnChangeListener(manual); sM.addOnChangeListener(manual); sP.addOnChangeListener(manual)
+        btnAuto.setOnClickListener {
+            // sin captura activa arranca solo el modo prueba: necesita el permiso
+            if (!RecordService.corriendo && !RecordService.probando &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 3)
+                return@setOnClickListener
+            }
+            ContextCompat.startForegroundService(
+                this, Intent(this, RecordService::class.java).setAction(RecordService.ACTION_EQ_AUTO))
+        }
+        pintar()
+        val dlg = MaterialAlertDialogBuilder(this)
+            .setTitle("Ecualizador del micrófono")
+            .setView(v)
+            .setPositiveButton("Cerrar", null)
+            .setNeutralButton("Plano") { _, _ ->
+                Ajustes.eqGraves = 0f; Ajustes.eqMedios = 0f; Ajustes.eqPresencia = 0f
+                Prefs.setEq(this, 0f, 0f, 0f)
+            }
+            .show()
+        // refresco en vivo: el auto mueve los sliders al probar cada curva
+        val r = object : Runnable {
+            override fun run() { pintar(); handler.postDelayed(this, 400) }
+        }
+        handler.postDelayed(r, 400)
+        dlg.setOnDismissListener { handler.removeCallbacks(r) }
     }
 
     /** Lista de partes de la sesión para ESCUCHARLAS (toque = reproducir/parar). */

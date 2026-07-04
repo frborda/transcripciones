@@ -19,6 +19,14 @@ import android.content.Context
 object Ajustes {
     @Volatile var supresion: Int = 50
 
+    // ECUALIZADOR de captura (dB, -12..+12 por banda): graves = shelf 120 Hz,
+    // medios = campana 400 Hz (la "caja"/eco de sala vive ahí), presencia =
+    // shelf 3 kHz (inteligibilidad). 0/0/0 = plano (el filtro no corre).
+    // Los setea el diálogo de EQ (manual) o la búsqueda automática.
+    @Volatile var eqGraves = 0f
+    @Volatile var eqMedios = 0f
+    @Volatile var eqPresencia = 0f
+
     val umbralVad: Float get() = 0.20f + 0.40f * (supresion / 100f)
     val capNorm: Float
         get() = (256.0 * Math.pow(4.0 / 256.0, supresion / 100.0)).toFloat()  // 256→32→4
@@ -26,5 +34,8 @@ object Ajustes {
 
     fun cargar(c: Context) {
         supresion = Prefs.supresion(c)
+        eqGraves = Prefs.eqG(c)
+        eqMedios = Prefs.eqM(c)
+        eqPresencia = Prefs.eqP(c)
     }
 }

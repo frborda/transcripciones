@@ -12,6 +12,7 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -130,6 +131,76 @@ class CapturaAudio(
     // no salen recortadas (el clipping es lo único irreparable río abajo).
     private var aten = 1.0
 
+    // ---- ECUALIZADOR de 3 bandas (biquads RBJ en cascada) ----
+    // Corre sobre TODO el camino (métricas, VAD, grabación): así el índice de
+    // claridad refleja la curva activa y el modo auto puede compararlas.
+    private class Biquad {
+        var b0 = 1.0; var b1 = 0.0; var b2 = 0.0; var a1 = 0.0; var a2 = 0.0
+        var x1 = 0.0; var x2 = 0.0; var y1 = 0.0; var y2 = 0.0
+        fun procesar(x: Double): Double {
+            val y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+            x2 = x1; x1 = x; y2 = y1; y1 = y
+            return y
+        }
+    }
+    private val eqBajo = Biquad()
+    private val eqMedio = Biquad()
+    private val eqAlto = Biquad()
+    private var eqG = Float.NaN   // NaN fuerza la primera configuración
+    private var eqM = Float.NaN
+    private var eqP = Float.NaN
+    private var eqActivo = false
+
+    private fun setShelfBajo(q: Biquad, f0: Double, dB: Double) {
+        val A = Math.pow(10.0, dB / 40.0)
+        val w0 = 2.0 * Math.PI * f0 / SR
+        val cs = Math.cos(w0)
+        val alpha = Math.sin(w0) / 2.0 * Math.sqrt(2.0)  // S = 1
+        val sq = 2.0 * Math.sqrt(A) * alpha
+        val a0 = (A + 1) + (A - 1) * cs + sq
+        q.b0 = A * ((A + 1) - (A - 1) * cs + sq) / a0
+        q.b1 = 2 * A * ((A - 1) - (A + 1) * cs) / a0
+        q.b2 = A * ((A + 1) - (A - 1) * cs - sq) / a0
+        q.a1 = -2 * ((A - 1) + (A + 1) * cs) / a0
+        q.a2 = ((A + 1) + (A - 1) * cs - sq) / a0
+    }
+
+    private fun setShelfAlto(q: Biquad, f0: Double, dB: Double) {
+        val A = Math.pow(10.0, dB / 40.0)
+        val w0 = 2.0 * Math.PI * f0 / SR
+        val cs = Math.cos(w0)
+        val alpha = Math.sin(w0) / 2.0 * Math.sqrt(2.0)  // S = 1
+        val sq = 2.0 * Math.sqrt(A) * alpha
+        val a0 = (A + 1) - (A - 1) * cs + sq
+        q.b0 = A * ((A + 1) + (A - 1) * cs + sq) / a0
+        q.b1 = -2 * A * ((A - 1) + (A + 1) * cs) / a0
+        q.b2 = A * ((A + 1) + (A - 1) * cs - sq) / a0
+        q.a1 = 2 * ((A - 1) - (A + 1) * cs) / a0
+        q.a2 = ((A + 1) - (A - 1) * cs - sq) / a0
+    }
+
+    private fun setCampana(q: Biquad, f0: Double, qFactor: Double, dB: Double) {
+        val A = Math.pow(10.0, dB / 40.0)
+        val w0 = 2.0 * Math.PI * f0 / SR
+        val cs = Math.cos(w0)
+        val alpha = Math.sin(w0) / (2.0 * qFactor)
+        val a0 = 1 + alpha / A
+        q.b0 = (1 + alpha * A) / a0
+        q.b1 = -2 * cs / a0
+        q.b2 = (1 - alpha * A) / a0
+        q.a1 = -2 * cs / a0
+        q.a2 = (1 - alpha / A) / a0
+    }
+
+    private fun configurarEq(g: Float, m: Float, p: Float) {
+        eqG = g; eqM = m; eqP = p
+        eqActivo = abs(g) >= 0.25f || abs(m) >= 0.25f || abs(p) >= 0.25f
+        if (!eqActivo) return
+        setShelfBajo(eqBajo, 120.0, g.toDouble())
+        setCampana(eqMedio, 400.0, 1.0, m.toDouble())
+        setShelfAlto(eqAlto, 3000.0, p.toDouble())
+    }
+
     /** CLARIDAD de la voz captada, 0..100 (-1 hasta juntar ~2 s de habla).
      *  Combina el SNR (cuánto sobresale la voz del ruido de sala) con la
      *  confianza de Silero (cae con eco, distancia y voz entredicha) menos un
@@ -142,6 +213,11 @@ class CapturaAudio(
     private val calSat = BooleanArray(CAL_VENTANA)
     private var calIdx = 0
     private var calLlenos = 0
+
+    /** Vacía la ventana de claridad (el modo auto-EQ mide cada curva desde cero).
+     *  Se pide con un flag y lo aplica el hilo de captura al borde del frame. */
+    fun reiniciarCalidad() { pedidoResetCal = true }
+    @Volatile private var pedidoResetCal = false
 
     private fun calcularCalidad(): Int {
         var sSnr = 0f; var sProb = 0f; var nSat = 0
@@ -348,6 +424,28 @@ class CapturaAudio(
                     hx2 = hx1; hx1 = x
                     hy2 = hy1; hy1 = y
                     pcm[i] = y.toInt().coerceIn(-32768, 32767).toShort()
+                }
+
+                // ECUALIZADOR (manual o auto): recalcular coeficientes solo si la
+                // curva cambió; plano (0/0/0) no corre nada
+                if (Ajustes.eqGraves != eqG || Ajustes.eqMedios != eqM ||
+                    Ajustes.eqPresencia != eqP)
+                    configurarEq(Ajustes.eqGraves, Ajustes.eqMedios, Ajustes.eqPresencia)
+                if (eqActivo) {
+                    for (i in pcm.indices) {
+                        var v = pcm[i].toDouble()
+                        v = eqBajo.procesar(v)
+                        v = eqMedio.procesar(v)
+                        v = eqAlto.procesar(v)
+                        pcm[i] = v.toInt().coerceIn(-32768, 32767).toShort()
+                    }
+                }
+
+                // reset de la ventana de claridad pedido por el auto-EQ
+                if (pedidoResetCal) {
+                    pedidoResetCal = false
+                    calIdx = 0; calLlenos = 0
+                    calidadVoz = -1
                 }
 
                 // métricas de la señal CRUDA: piso de ruido, silencio y candidato a voz

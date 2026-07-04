@@ -178,11 +178,21 @@
             </LinearLayout>
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnEq"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="2dp"
+                android:minWidth="0dp"
+                android:text="EQ"
+                android:textAllCaps="false" />
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnTest"
                 style="@style/Widget.Material3.Button.TextButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
+                android:layout_marginStart="2dp"
                 android:minWidth="0dp"
                 android:text="Probar"
                 android:textAllCaps="false" />
