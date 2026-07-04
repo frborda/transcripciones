@@ -94,6 +94,36 @@ def colapsar_bucles(texto, ws, umbral=5, dejar=3):
     return " ".join(w["palabra"] for w in ws), ws, colapsado
 
 
+def aplicar_wpe(onda, sr=16000, bloque_s=60, solapa_s=1):
+    """DERREVERBERACIÓN WPE (nara-wpe): quita la cola de eco de salas grandes o de
+    techos altos ANTES de whisper (el eco emborrona las sílabas y es de lo que más
+    degrada la transcripción con micrófono lejano). Por bloques de 60 s con 1 s de
+    contexto para que el filtro converja, así el audio largo no explota la RAM.
+    El original nunca se toca: esto solo transforma la señal en memoria."""
+    import numpy as np
+    from nara_wpe.wpe import wpe
+    from nara_wpe.utils import istft, stft
+
+    n = len(onda)
+    out = np.empty_like(onda)
+    paso = bloque_s * sr
+    solapa = solapa_s * sr
+    ini = 0
+    while ini < n:
+        fin = min(n, ini + paso)
+        a = max(0, ini - solapa)
+        seg = onda[a:fin].astype(np.float64)[None, :]
+        Y = stft(seg, size=512, shift=128)
+        Z = wpe(Y.transpose(2, 0, 1), taps=10, delay=3, iterations=3).transpose(1, 2, 0)
+        z = istft(Z, size=512, shift=128)[0]
+        largo = fin - a
+        if len(z) < largo:
+            z = np.pad(z, (0, largo - len(z)))
+        out[ini:fin] = z[ini - a:largo].astype(onda.dtype)
+        ini = fin
+    return out
+
+
 def _norm_alinear(palabra: str) -> str:
     """Normaliza una palabra para el alineador MMS (vocabulario a-z): minúsculas y
     sin acentos. Lo que no queda representable (números, puntuación sola) va al
@@ -104,7 +134,7 @@ def _norm_alinear(palabra: str) -> str:
     return w or "*"
 
 
-def alinear_forzado(audio_path, segs, device):
+def alinear_forzado(audio_path, segs, device, onda=None):
     """Refina los tiempos por palabra con ALINEACIÓN FORZADA (torchaudio MMS_FA,
     wav2vec2 CTC multilingüe). Los tiempos de whisper salen de la cross-attention
     y traen sesgo (~+0,3 s) y jitter; la atribución de hablante de fusionar.py
@@ -127,7 +157,8 @@ def alinear_forzado(audio_path, segs, device):
         modelo = modelo.half()  # fp16: ~0,6 GB, convive con whisper large-v3 en 8 GB
     tokenizer = bundle.get_tokenizer()
     aligner = bundle.get_aligner()
-    audio = decode_audio(str(audio_path), sampling_rate=sr)
+    # alinear sobre la MISMA onda que transcribió whisper (con WPE si se aplicó)
+    audio = onda if onda is not None else decode_audio(str(audio_path), sampling_rate=sr)
 
     ok = fallo = 0
     with torch.inference_mode():
@@ -178,6 +209,9 @@ def main() -> int:
                    help="Alineación forzada de tiempos por palabra (wav2vec2/MMS_FA). "
                         "auto: se usa si está disponible, con fallback a los tiempos de "
                         "whisper. off: siempre tiempos de whisper. Def: auto")
+    p.add_argument("--wpe", default="off", choices=["on", "off"],
+                   help="Derreverberación WPE antes de whisper (salas con eco / techos "
+                        "altos). El audio original no se modifica. Def: off")
     args = p.parse_args()
 
     audio = Path(args.audio)
@@ -226,9 +260,21 @@ def main() -> int:
         else:
             raise
 
+    # decodificar UNA vez (whisper acepta el array a 16 kHz); la misma onda se
+    # reutiliza para la alineación forzada, y es donde se aplica el WPE si se pidió
+    from faster_whisper.audio import decode_audio
+    onda = decode_audio(str(audio), sampling_rate=16000)
+    if args.wpe == "on":
+        try:
+            print("Aplicando WPE (derreverberación)...", flush=True)
+            onda = aplicar_wpe(onda)
+        except Exception as e:
+            print(f"AVISO: WPE falló ({e}); se transcribe el audio original.",
+                  file=sys.stderr)
+
     print(f"Transcribiendo {audio.name} ...", flush=True)
     segments, info = model.transcribe(
-        str(audio), language=idioma, vad_filter=True,
+        onda, language=idioma, vad_filter=True,
         # tiempos por palabra: habilitan la fusión fina con la diarización y el
         # umbral de alucinación de abajo
         word_timestamps=True,
@@ -277,7 +323,7 @@ def main() -> int:
     # 3) alineación forzada de los tiempos por palabra (wav2vec2), con fallback
     if args.alinear != "off":
         try:
-            ok, fallo = alinear_forzado(audio, segs, device)
+            ok, fallo = alinear_forzado(audio, segs, device, onda=onda)
             print(f"Alineación forzada (MMS_FA): {ok} segmentos alineados"
                   + (f", {fallo} con tiempos de whisper" if fallo else ""), flush=True)
         except Exception as e:

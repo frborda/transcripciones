@@ -15,3 +15,4 @@ soundfile==0.13.1         # unión de chunks / lectura-escritura WAV
 reportlab==4.5.1          # generación de los PDFs
 Telethon==1.43.2          # servicio de Telegram (tg_watcher.py / tg_login.py)
 gdown==6.1.0              # ingesta opcional de audios desde Google Drive
+nara-wpe
