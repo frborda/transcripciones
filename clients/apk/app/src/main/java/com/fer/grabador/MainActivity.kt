@@ -63,8 +63,15 @@ class MainActivity : AppCompatActivity() {
             if (activo) {
                 val ahora = System.currentTimeMillis()
                 tvTimer.text = if (RecordService.probando) {
+                    // los modos que cambian la captación van A LA VISTA: si la
+                    // detección empeora, acá se ve qué está activo (eco/EQ)
+                    val eqOn = kotlin.math.abs(Ajustes.eqGraves) >= 0.25f ||
+                            kotlin.math.abs(Ajustes.eqMedios) >= 0.25f ||
+                            kotlin.math.abs(Ajustes.eqPresencia) >= 0.25f
                     (if (RecordService.vadN) "VAD" else "energía") +
                             (if (RecordService.nsN) "+NS" else "") +
+                            (if (Prefs.eco(this@MainActivity)) "+eco" else "") +
+                            (if (eqOn) "+EQ" else "") +
                             (if (RecordService.hablaN) "  🗣" else "  —") +
                             "  ·  voz %.2f/%.2f  ·  mic %d dB · ×%.0f".format(
                                 RecordService.probN, Ajustes.umbralVad,

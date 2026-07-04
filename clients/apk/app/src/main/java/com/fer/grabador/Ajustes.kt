@@ -21,7 +21,7 @@ object Ajustes {
 
     // ECUALIZADOR de captura (dB, -12..+12 por banda): graves = shelf 120 Hz,
     // medios = campana 400 Hz (la "caja"/eco de sala vive ahí), presencia =
-    // shelf 3 kHz (inteligibilidad). 0/0/0 = plano (el filtro no corre).
+    // campana 3 kHz (inteligibilidad). 0/0/0 = plano (el filtro no corre).
     // Los setea el diálogo de EQ (manual) o la búsqueda automática.
     @Volatile var eqGraves = 0f
     @Volatile var eqMedios = 0f

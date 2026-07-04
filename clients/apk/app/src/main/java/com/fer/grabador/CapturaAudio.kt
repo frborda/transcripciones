@@ -165,20 +165,6 @@ class CapturaAudio(
         q.a2 = ((A + 1) + (A - 1) * cs - sq) / a0
     }
 
-    private fun setShelfAlto(q: Biquad, f0: Double, dB: Double) {
-        val A = Math.pow(10.0, dB / 40.0)
-        val w0 = 2.0 * Math.PI * f0 / SR
-        val cs = Math.cos(w0)
-        val alpha = Math.sin(w0) / 2.0 * Math.sqrt(2.0)  // S = 1
-        val sq = 2.0 * Math.sqrt(A) * alpha
-        val a0 = (A + 1) - (A - 1) * cs + sq
-        q.b0 = A * ((A + 1) + (A - 1) * cs + sq) / a0
-        q.b1 = -2 * A * ((A - 1) + (A + 1) * cs) / a0
-        q.b2 = A * ((A + 1) + (A - 1) * cs - sq) / a0
-        q.a1 = 2 * ((A - 1) - (A + 1) * cs) / a0
-        q.a2 = ((A + 1) - (A - 1) * cs - sq) / a0
-    }
-
     private fun setCampana(q: Biquad, f0: Double, qFactor: Double, dB: Double) {
         val A = Math.pow(10.0, dB / 40.0)
         val w0 = 2.0 * Math.PI * f0 / SR
@@ -198,7 +184,10 @@ class CapturaAudio(
         if (!eqActivo) return
         setShelfBajo(eqBajo, 120.0, g.toDouble())
         setCampana(eqMedio, 400.0, 1.0, m.toDouble())
-        setShelfAlto(eqAlto, 3000.0, p.toDouble())
+        // presencia = CAMPANA ancha en 3 kHz (no shelf): un shelf a +9 dB sube
+        // también el siseo de 8-24 kHz, que la decimación 3:1 del VAD repliega
+        // (aliasing) dentro de la banda de Silero y le ensucia la detección
+        setCampana(eqAlto, 3000.0, 0.7, p.toDouble())
     }
 
     /** CLARIDAD de la voz captada, 0..100 (-1 hasta juntar ~2 s de habla).
@@ -347,14 +336,15 @@ class CapturaAudio(
             if (audio.state != AudioRecord.STATE_INITIALIZED)
                 throw IllegalStateException("AudioRecord no inicializó (¿mic ocupado?)")
 
-            // captación: amplia para mesa normal; DIRECCIONAL en salas con eco
-            // (el campo amplio junta las reflexiones del techo). Si el equipo no
-            // honra la API, es no-op.
-            if (Build.VERSION.SDK_INT >= 29) {
+            // captación DIRECCIONAL solo si se pidió (sala con eco). Con eco
+            // apagado NO se toca el enrutado de mics: pedir campo "amplio"
+            // (-1.0) también activa el beamforming del fabricante y en el S22U
+            // baja la sensibilidad a la voz lejana/fuera de eje.
+            if (ecoSala && Build.VERSION.SDK_INT >= 29) {
                 try {
                     audio.setPreferredMicrophoneDirection(
                         android.media.MicrophoneDirection.MIC_DIRECTION_UNSPECIFIED)
-                    audio.setPreferredMicrophoneFieldDimension(if (ecoSala) 0.8f else -1.0f)
+                    audio.setPreferredMicrophoneFieldDimension(0.8f)
                 } catch (_: Exception) {}
             }
 
