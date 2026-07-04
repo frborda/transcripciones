@@ -517,8 +517,12 @@ class RecordService : Service() {
             val piIniciar = PendingIntent.getService(
                 this, 3, Intent(this, RecordService::class.java).setAction(ACTION_START),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-            val piSalir = PendingIntent.getService(
-                this, 4, Intent(this, RecordService::class.java).setAction(ACTION_EXIT),
+            // salir pide confirmación: abre la app con el diálogo (igual que Finalizar)
+            val piSalir = PendingIntent.getActivity(
+                this, 4,
+                Intent(this, MainActivity::class.java)
+                    .putExtra("confirmar_salir", true)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             b.addAction(0, "▶ Iniciar", piIniciar)
             b.addAction(0, "✖ Salir", piSalir)

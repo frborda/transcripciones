@@ -131,6 +131,7 @@ class MainActivity : AppCompatActivity() {
             iniciar()
         }
         if (intent?.getBooleanExtra("confirmar_fin", false) == true) confirmarFinalizar()
+        if (intent?.getBooleanExtra("confirmar_salir", false) == true) salir()
     }
 
     private fun mostrarNotificacion() {
@@ -138,14 +139,22 @@ class MainActivity : AppCompatActivity() {
             this, Intent(this, RecordService::class.java).setAction(RecordService.ACTION_SHOW))
     }
 
-    /** Salir de la app: cierra la pantalla y quita la notificación (vía servicio). */
+    /** Salir (app o notificación): pide confirmación para no salir sin querer. */
     private fun salir() {
         if (RecordService.corriendo) {
             toast("Hay una grabación en curso: finalizala antes de salir")
             return
         }
-        startService(Intent(this, RecordService::class.java).setAction(RecordService.ACTION_EXIT))
-        finishAndRemoveTask()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("¿Salir del grabador?")
+            .setMessage("Se cierra la app y se quita la notificación de la barra.")
+            .setPositiveButton("Salir") { _, _ ->
+                startService(Intent(this, RecordService::class.java)
+                    .setAction(RecordService.ACTION_EXIT))
+                finishAndRemoveTask()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
     }
 
     override fun onDestroy() {
@@ -156,6 +165,7 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: android.content.Intent?) {
         super.onNewIntent(intent)
         if (intent?.getBooleanExtra("confirmar_fin", false) == true) confirmarFinalizar()
+        if (intent?.getBooleanExtra("confirmar_salir", false) == true) salir()
     }
 
     /** Configuración en un diálogo: se usa una vez y no ocupa la pantalla principal. */
