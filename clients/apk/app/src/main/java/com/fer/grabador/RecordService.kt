@@ -199,7 +199,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         val vad = try { VadSilero(this) } catch (e: Exception) { null }
         estado = if (vad != null) "🎙 prueba: hablá y mirá la barra (VAD activo)"
                  else "🎙 prueba: hablá y mirá la barra (VAD no cargó: energía)"
-        captura = CapturaAudio(fuenteElegida(), vad, Prefs.ns(this), this)
+        captura = CapturaAudio(fuenteElegida(), vad, Prefs.ns(this), Prefs.eco(this), this)
             .also { it.iniciar(File(cacheDir, "test.m4a")) }
         handler.postDelayed(testTimeout, 120_000)  // apagado solo a los 2 min
     }
@@ -319,7 +319,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         cortePedido = false
         avisoDado = false
         bajosMs = 0; tapadoMs = 0; satMs = 0
-        captura = CapturaAudio(fuenteElegida(), vad, Prefs.ns(this), this).also { it.iniciar(f) }
+        captura = CapturaAudio(fuenteElegida(), vad, Prefs.ns(this), Prefs.eco(this), this).also { it.iniciar(f) }
         parteN = parte
         tParte = System.currentTimeMillis()
         grabandoArchivo = f.name

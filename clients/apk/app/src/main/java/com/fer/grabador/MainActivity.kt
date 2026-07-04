@@ -310,6 +310,7 @@ class MainActivity : AppCompatActivity() {
         val swAuto = v.findViewById<CompoundButton>(R.id.swAuto)
         val swCruda = v.findViewById<CompoundButton>(R.id.swCruda)
         val swNs = v.findViewById<CompoundButton>(R.id.swNs)
+        val swEco = v.findViewById<CompoundButton>(R.id.swEco)
 
         etToken.setText(Prefs.token(this))
         etChat.setText(Prefs.chatId(this))
@@ -317,6 +318,7 @@ class MainActivity : AppCompatActivity() {
         swAuto.isChecked = Prefs.auto(this)
         swCruda.isChecked = Prefs.cruda(this)
         swNs.isChecked = Prefs.ns(this)
+        swEco.isChecked = Prefs.eco(this)
 
         v.findViewById<View>(R.id.btnDetectar).setOnClickListener {
             val token = etToken.text.toString().trim()
@@ -350,7 +352,8 @@ class MainActivity : AppCompatActivity() {
                     Prefs.parseHms(etIntervalo.text.toString()),
                     swAuto.isChecked,
                     swCruda.isChecked,
-                    swNs.isChecked)
+                    swNs.isChecked,
+                    swEco.isChecked)
                 toast("Configuración guardada")
             }
             .setNegativeButton("Cancelar", null)

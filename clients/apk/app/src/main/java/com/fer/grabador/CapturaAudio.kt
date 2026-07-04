@@ -2,6 +2,7 @@ package com.fer.grabador
 
 import android.annotation.SuppressLint
 import android.media.AudioFormat
+import android.os.Build
 import android.media.AudioRecord
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -31,6 +32,7 @@ class CapturaAudio(
     private val fuente: Int,
     private val vad: VadSilero?,          // null → detector de energía adaptativo
     private val supresionRuido: Boolean,  // NoiseSuppressor del DSP del teléfono
+    private val ecoSala: Boolean,         // sala con eco: captación direccional
     private val listener: Listener,
 ) {
     interface Listener {
@@ -50,6 +52,24 @@ class CapturaAudio(
         const val SR = 48000
         const val FRAME = 1536          // 32 ms a 48 kHz (→ 512 a 16 kHz para el VAD)
         const val BITRATE = 128000
+
+        // biquad pasa-altos RBJ fs=48k f0=80Hz Q=0.707, normalizado por a0
+        private val HPF_B0: Double
+        private val HPF_B1: Double
+        private val HPF_B2: Double
+        private val HPF_A1: Double
+        private val HPF_A2: Double
+        init {
+            val w0 = 2.0 * Math.PI * 80.0 / SR
+            val cosw = Math.cos(w0)
+            val alpha = Math.sin(w0) / (2.0 * 0.7071)
+            val a0 = 1.0 + alpha
+            HPF_B0 = (1.0 + cosw) / 2.0 / a0
+            HPF_B1 = -(1.0 + cosw) / a0
+            HPF_B2 = HPF_B0
+            HPF_A1 = -2.0 * cosw / a0
+            HPF_A2 = (1.0 - alpha) / a0
+        }
     }
 
     @Volatile private var corriendo = false
@@ -97,6 +117,17 @@ class CapturaAudio(
     // LEJANA/reverberante hace fluctuar a Silero entre sílabas; sin puentear esos
     // huecos hay que hablar fuerte para sostener la detección.
     private var probSuave = 0f
+
+    // PASA-ALTOS 80 Hz (biquad): saca el retumbe estructural (mesa, pisos viejos,
+    // aire acondicionado) que ensucia el espectro sin aportar voz. Coeficientes
+    // RBJ para fs=48k, f0=80, Q=0.707, normalizados por a0.
+    private var hx1 = 0.0; private var hx2 = 0.0
+    private var hy1 = 0.0; private var hy2 = 0.0
+
+    // LIMITADOR con lookahead de frame: conocemos el pico del frame ANTES de
+    // emitirlo, así que la atenuación se aplica en rampa y las sílabas fuertes
+    // no salen recortadas (el clipping es lo único irreparable río abajo).
+    private var aten = 1.0
 
     fun iniciar(primerArchivo: File) {
         if (corriendo) return
@@ -213,6 +244,17 @@ class CapturaAudio(
             if (audio.state != AudioRecord.STATE_INITIALIZED)
                 throw IllegalStateException("AudioRecord no inicializó (¿mic ocupado?)")
 
+            // captación: amplia para mesa normal; DIRECCIONAL en salas con eco
+            // (el campo amplio junta las reflexiones del techo). Si el equipo no
+            // honra la API, es no-op.
+            if (Build.VERSION.SDK_INT >= 29) {
+                try {
+                    audio.setPreferredMicrophoneDirection(
+                        android.media.MicrophoneDirection.MIC_DIRECTION_UNSPECIFIED)
+                    audio.setPreferredMicrophoneFieldDimension(if (ecoSala) 0.8f else -1.0f)
+                } catch (_: Exception) {}
+            }
+
             // SUPRESIÓN DE RUIDO por hardware (DSP del teléfono, tipo Krisp nativo):
             // limpia el ruido ambiente ANTES del encoder y del VAD. Si el equipo no
             // la trae, sigue sin ella (nsActivo lo refleja).
@@ -270,6 +312,16 @@ class CapturaAudio(
                 }
                 if (pedidoParar) break
 
+                // PASA-ALTOS 80 Hz (antes de todo: el retumbe no debe contaminar ni
+                // el piso de ruido ni la ganancia ni lo grabado)
+                for (i in pcm.indices) {
+                    val x = pcm[i].toDouble()
+                    val y = HPF_B0 * x + HPF_B1 * hx1 + HPF_B2 * hx2 - HPF_A1 * hy1 - HPF_A2 * hy2
+                    hx2 = hx1; hx1 = x
+                    hy2 = hy1; hy1 = y
+                    pcm[i] = y.toInt().coerceIn(-32768, 32767).toShort()
+                }
+
                 // métricas de la señal CRUDA: piso de ruido, silencio y candidato a voz
                 var suma0 = 0.0
                 var pico0 = 0
@@ -317,6 +369,21 @@ class CapturaAudio(
                 }
                 if (pico >= 32700) ganancia = max(1.0, ganancia * 0.85)  // recorta: bajar YA
                 val saturado = pico >= 32200
+
+                // LIMITADOR (lookahead de frame): el pico ya es conocido ANTES de
+                // emitir el frame; atenuar en rampa hacia 30000 evita el recorte
+                // duro en sílabas fuertes. Release suave (+4 %/frame) al normalizar.
+                val objetivo = if (pico > 30000) 30000.0 / pico else 1.0
+                val destino = if (objetivo < aten) objetivo else minOf(1.0, aten * 1.04)
+                if (destino < 0.999 || aten < 0.999) {
+                    val paso = (destino - aten) / FRAME
+                    var fLim = aten
+                    for (i in pcm.indices) {
+                        fLim += paso
+                        pcm[i] = (pcm[i] * fLim).toInt().coerceIn(-32768, 32767).toShort()
+                    }
+                }
+                aten = destino
 
                 // medidor por SNR: cuánto sobresale la señal del piso de ruido.
                 // Silencio ≈ 0-15 %, voz normal ≈ 50-90 % (30 dB de SNR = 100 %).
