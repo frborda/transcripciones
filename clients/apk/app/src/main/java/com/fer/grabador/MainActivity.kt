@@ -14,6 +14,7 @@ import android.view.View
 import android.widget.Button
 import android.widget.CompoundButton
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -24,10 +25,6 @@ import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var etToken: EditText
-    private lateinit var etChat: EditText
-    private lateinit var etIntervalo: EditText
-    private lateinit var cbAuto: CompoundButton
     private lateinit var tvEstado: TextView
     private lateinit var tvTimer: TextView
     private lateinit var tvPartes: TextView
@@ -96,25 +93,15 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        etToken = findViewById(R.id.etToken)
-        etChat = findViewById(R.id.etChat)
-        etIntervalo = findViewById(R.id.etIntervalo)
-        cbAuto = findViewById(R.id.cbAuto)
         tvEstado = findViewById(R.id.tvEstado)
         tvTimer = findViewById(R.id.tvTimer)
         tvPartes = findViewById(R.id.tvPartes)
         dotEstado = findViewById(R.id.dotEstado)
 
-        etToken.setText(Prefs.token(this))
-        etChat.setText(Prefs.chatId(this))
-        etIntervalo.setText(Prefs.fmtHms(Prefs.intervaloSeg(this)))
-        cbAuto.isChecked = Prefs.auto(this)
-
         findViewById<Button>(R.id.btnIniciar).setOnClickListener { iniciar() }
         findViewById<Button>(R.id.btnCortar).setOnClickListener { servicio(RecordService.ACTION_CUT) }
         findViewById<Button>(R.id.btnFinalizar).setOnClickListener { confirmarFinalizar() }
-        findViewById<Button>(R.id.btnDetectar).setOnClickListener { detectarChat() }
-        findViewById<Button>(R.id.btnBateria).setOnClickListener { abrirAjustesBateria() }
+        findViewById<ImageButton>(R.id.btnConfig).setOnClickListener { abrirConfig() }
 
         // quedó una grabación sin terminar (la app murió): retomarla sola
         if (!RecordService.corriendo && Prefs.sesionActiva(this).isNotEmpty()) {
@@ -127,6 +114,56 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: android.content.Intent?) {
         super.onNewIntent(intent)
         if (intent?.getBooleanExtra("confirmar_fin", false) == true) confirmarFinalizar()
+    }
+
+    /** Configuración en un diálogo: se usa una vez y no ocupa la pantalla principal. */
+    private fun abrirConfig() {
+        val v = layoutInflater.inflate(R.layout.dialog_config, null)
+        val etToken = v.findViewById<EditText>(R.id.etToken)
+        val etChat = v.findViewById<EditText>(R.id.etChat)
+        val etIntervalo = v.findViewById<EditText>(R.id.etIntervalo)
+        val swAuto = v.findViewById<CompoundButton>(R.id.swAuto)
+
+        etToken.setText(Prefs.token(this))
+        etChat.setText(Prefs.chatId(this))
+        etIntervalo.setText(Prefs.fmtHms(Prefs.intervaloSeg(this)))
+        swAuto.isChecked = Prefs.auto(this)
+
+        v.findViewById<View>(R.id.btnDetectar).setOnClickListener {
+            val token = etToken.text.toString().trim()
+            if (token.isEmpty()) {
+                toast("Pegá el token del bot primero")
+                return@setOnClickListener
+            }
+            toast("Buscando... (antes mandale cualquier mensaje al bot)")
+            Thread {
+                val id = TelegramApi.detectarChatId(token)
+                runOnUiThread {
+                    if (id != null) {
+                        etChat.setText(id)
+                        toast("chat id detectado: $id")
+                    } else {
+                        toast("No lo encontré: escribí algo en el chat del bot y reintentá")
+                    }
+                }
+            }.start()
+        }
+        v.findViewById<View>(R.id.btnBateria).setOnClickListener { abrirAjustesBateria() }
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Configuración")
+            .setView(v)
+            .setPositiveButton("Guardar") { _, _ ->
+                Prefs.guardar(
+                    this,
+                    etToken.text.toString().trim(),
+                    etChat.text.toString().trim(),
+                    Prefs.parseHms(etIntervalo.text.toString()),
+                    swAuto.isChecked)
+                toast("Configuración guardada")
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
     }
 
     private fun confirmarFinalizar() {
@@ -152,19 +189,10 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacks(refresco)
     }
 
-    private fun guardarPrefs() {
-        Prefs.guardar(
-            this,
-            etToken.text.toString().trim(),
-            etChat.text.toString().trim(),
-            Prefs.parseHms(etIntervalo.text.toString()),
-            cbAuto.isChecked)
-    }
-
     private fun iniciar() {
-        guardarPrefs()
         if (Prefs.token(this).isEmpty() || Prefs.chatId(this).isEmpty()) {
             toast("Configurá el token del bot y el chat id primero")
+            abrirConfig()
             return
         }
         val faltan = mutableListOf<String>()
@@ -192,34 +220,11 @@ class MainActivity : AppCompatActivity() {
 
     /** CUT/FINISH: la app está en primer plano, alcanza con startService. */
     private fun servicio(action: String) {
-        guardarPrefs()
         if (!RecordService.corriendo) {
             toast("No hay grabación en curso")
             return
         }
         startService(Intent(this, RecordService::class.java).setAction(action))
-    }
-
-    private fun detectarChat() {
-        guardarPrefs()
-        val token = Prefs.token(this)
-        if (token.isEmpty()) {
-            toast("Pegá el token del bot primero")
-            return
-        }
-        toast("Buscando... (antes mandale cualquier mensaje al bot)")
-        Thread {
-            val id = TelegramApi.detectarChatId(token)
-            runOnUiThread {
-                if (id != null) {
-                    etChat.setText(id)
-                    guardarPrefs()
-                    toast("chat id detectado: $id")
-                } else {
-                    toast("No lo encontré: abrí el chat con el bot, mandá 'hola' y reintentá")
-                }
-            }
-        }.start()
     }
 
     private fun abrirAjustesBateria() {
