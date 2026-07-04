@@ -26,6 +26,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -548,6 +549,71 @@ def es_audio(f):
     return mime.startswith("audio") or mime.startswith("video") or ext in AUDIO_EXT
 
 
+# ---------- auto-vinculación de chats («vincular <código>») ----------
+# En vez de editar .tg_config.json a mano con el chat_id, el usuario escribe
+# «vincular <código>» EN el chat que quiere vincular (el código sale en la consola
+# del watcher: solo quien ve la PC puede autorizar). El watcher agrega el chat a la
+# config, empieza a escucharlo al instante y responde con el id (útil para la app).
+
+CODIGO_VINCULAR = None
+CHATS_CONF = []   # lista viva de chats escuchados (formato config: "me", ints, @user)
+CHATS_IDS = set()  # los mismos, resueltos a ids numéricos (para saber si ya está)
+
+
+def nuevo_codigo_vincular():
+    global CODIGO_VINCULAR
+    CODIGO_VINCULAR = f"{secrets.randbelow(1_000_000):06d}"
+    print(f"[watcher] Para vincular un chat nuevo, escribí EN ese chat: "
+          f"vincular {CODIGO_VINCULAR}", flush=True)
+
+
+def guardar_chat_en_config(chat_id):
+    """Agrega el chat a la clave "chat" de .tg_config.json (sin tocar el resto)."""
+    cfg = json.loads((ROOT / ".tg_config.json").read_text(encoding="utf-8-sig"))
+    chats = cfg.get("chat", "me")
+    if not isinstance(chats, list):
+        chats = [chats]
+    if chat_id not in chats:
+        chats.append(chat_id)
+        cfg["chat"] = chats
+        util.escribir_json(ROOT / ".tg_config.json", cfg, indent=2)
+    return chats
+
+
+async def on_vincular(event):
+    """Corre para TODOS los mensajes de la cuenta (también los propios, así el
+    usuario puede escribir «vincular ...» él mismo): por eso es barato y solo
+    reacciona al patrón exacto."""
+    global CHATS_CONF
+    try:
+        if event.message.id in SENT_IDS:
+            return
+        m = re.fullmatch(r"\s*vincular\s+(\d{4,8})\s*",
+                         event.message.message or "", re.IGNORECASE)
+        if not m:
+            return
+        chat_id = event.chat_id
+        if m.group(1) != CODIGO_VINCULAR:
+            print(f"[watcher] intento de vinculación con código incorrecto en {chat_id}",
+                  flush=True)
+            return  # sin respuesta: no dar pistas a desconocidos
+        if chat_id in CHATS_IDS:
+            await enviar_msg(chat_id, f"✔ Este chat ya estaba vinculado (id {chat_id}).")
+            return
+        CHATS_IDS.add(chat_id)
+        CHATS_CONF = guardar_chat_en_config(chat_id)
+        # escuchar el chat nuevo YA (re-registrar el handler principal)
+        client.remove_event_handler(on_message)
+        client.add_event_handler(on_message, events.NewMessage(chats=CHATS_CONF))
+        print(f"[watcher] chat vinculado: {chat_id}", flush=True)
+        await enviar_msg(chat_id,
+                         f"✅ Chat vinculado (id {chat_id}). Ya podés mandar audios acá. "
+                         "Si configurás la app del grabador, este id es el «chat id».")
+        nuevo_codigo_vincular()  # un código por vinculación
+    except Exception as e:  # noqa: BLE001 — este handler no debe tumbar nada
+        print(f"[watcher] error en vinculación: {e}", flush=True)
+
+
 async def on_message(event):
     if event.message.id in SENT_IDS:
         return
@@ -622,19 +688,28 @@ async def outbox_loop():
 
 
 async def main_async():
-    global client
+    global client, CHATS_CONF
     api_id, api_hash, chat, phone = cargar_config()
     TG_DIR.mkdir(parents=True, exist_ok=True)
     INCOMING.mkdir(parents=True, exist_ok=True)
     PROYECTOS.mkdir(parents=True, exist_ok=True)
+    CHATS_CONF = chat if isinstance(chat, list) else [chat]
     client = TelegramClient(str(ROOT / "tg_user"), api_id, api_hash)
-    client.add_event_handler(on_message, events.NewMessage(chats=chat))
+    client.add_event_handler(on_message, events.NewMessage(chats=CHATS_CONF))
+    client.add_event_handler(on_vincular, events.NewMessage())  # todos los chats
     await client.connect()
     if not await client.is_user_authorized():
         print("[watcher] sesión no autorizada. Corré primero: python tg_login.py", flush=True)
         return
     me = await client.get_me()
     print(f"[watcher] conectado como {me.username or me.first_name} (id {me.id}); chat='{chat}'", flush=True)
+    # resolver los chats configurados a ids numéricos (para la vinculación)
+    for c in CHATS_CONF:
+        try:
+            CHATS_IDS.add(await client.get_peer_id(c))
+        except Exception:
+            pass  # un chat irresoluble no impide arrancar
+    nuevo_codigo_vincular()
     arrancar_diar_service()  # pre-warm: carga el modelo de diarización una vez
     restaurar_sesiones()
     client.loop.create_task(outbox_loop())

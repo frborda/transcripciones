@@ -49,15 +49,17 @@ WINDOWS 11, siguiendo el README:
    https://huggingface.co/settings/tokens), guardalo en .hf_token, y recordame
    aceptar las condiciones de pyannote/speaker-diarization-community-1 y
    pyannote/segmentation-3.0 en Hugging Face.
-5. Configurá Telegram: pedime api_id y api_hash (de https://my.telegram.org) y
-   el chat a escuchar, armá .tg_config.json, y corré python src\tg_login.py
-   avisándome que me va a llegar un código por Telegram (lo corro yo con
-   ! src\tg_login.py porque necesita entrada interactiva).
+5. Configurá Telegram: pedime api_id y api_hash (de https://my.telegram.org),
+   armá .tg_config.json con "chat": "me" (los demás chats se vinculan después,
+   sin editar la config), y corré python src\tg_login.py avisándome que me va
+   a llegar un código por Telegram (lo corro yo con ! src\tg_login.py porque
+   necesita entrada interactiva).
 6. Hacé una prueba de humo: transcribí un audio corto con el modelo tiny
    (src\transcribir.py <audio> --modelo tiny) y verificá que salgan el .srt,
    el .txt y el _palabras.json.
-7. Dejá corriendo .\bin\tg_watcher.ps1 en segundo plano y verificá en el log
-   que quedó escuchando.
+7. Dejá corriendo .\bin\tg_watcher.ps1 en segundo plano, verificá en el log que
+   quedó escuchando y mostrame el código de vinculación que imprime, indicando
+   que escriba «vincular <código>» en el chat de Telegram que quiera usar.
 
 Los .ps1 de este repo son para PowerShell 5.1 y van en UTF-8 con BOM; no los
 conviertas. No inventes credenciales: pedímelas cuando haga falta. Al final,
@@ -166,8 +168,9 @@ notepad .tg_config.json
 }
 ```
 
-   - `chat`: dónde escucha el watcher. `"me"` = tus **Mensajes Guardados**. Podés
-     agregar un grupo o el chat de un bot (p. ej. `["me", "@TuBot"]`).
+   - `chat`: dónde escucha el watcher. `"me"` = tus **Mensajes Guardados**; dejalo
+     así: los demás chats se agregan solos con la **vinculación** (abajo), sin
+     editar este archivo ni averiguar ningún chat id.
 
 3. Login interactivo de Telegram (una sola vez; pide el código que te llega):
 
@@ -180,6 +183,14 @@ python src\tg_login.py
 ```powershell
 .\bin\tg_watcher.ps1
 ```
+
+5. **Vinculá los chats** donde vas a mandar audios (un grupo, el chat de tu bot, etc.):
+   al arrancar, el watcher muestra en su consola un código, p. ej.
+   `Para vincular un chat nuevo, escribí EN ese chat: vincular 407941`.
+   Escribí exactamente eso en el chat que quieras y el watcher responde
+   `✅ Chat vinculado (id ...)` — queda guardado en la config y ya escucha ahí
+   (el id de la respuesta es el que va en la app del grabador, sin usar "Detectar").
+   Solo quien ve la consola de la PC conoce el código, y se renueva con cada uso.
 
 ## 4. Uso
 
