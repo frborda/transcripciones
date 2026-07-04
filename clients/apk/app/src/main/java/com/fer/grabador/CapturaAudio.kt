@@ -32,8 +32,10 @@ class CapturaAudio(
     private val listener: Listener,
 ) {
     interface Listener {
-        /** Cada 32 ms: nivel 0..100, si hay habla y si el pico está saturando. */
-        fun onFrame(nivel: Int, esVoz: Boolean, saturado: Boolean)
+        /** Cada 32 ms. nivel: SNR 0..100 (cuánto sobresale la señal del ruido de
+         *  fondo). esVoz: el VAD detecta habla. silencioso: la energía cruda está
+         *  al nivel del piso de ruido (para cortar se exigen AMBAS señales). */
+        fun onFrame(nivel: Int, esVoz: Boolean, silencioso: Boolean, saturado: Boolean)
         /** Una parte quedó cerrada en disco (por rotación o al detener). */
         fun onParteCerrada(parte: ParteCerrada)
         fun onError(msg: String)
@@ -53,17 +55,18 @@ class CapturaAudio(
     private val pedidoRotar = AtomicReference<File?>(null)
     private var hilo: Thread? = null
 
-    // detector de energía adaptativo (fallback sin VAD): piso de ruido con EMA
+    // piso de ruido (RMS crudo): aprende SOLO de los frames tranquilos
     private var pisoRuido = 150.0
 
     // envolvente del medidor: ataque instantáneo, caída suave (~500 ms), como un vúmetro
     private var envNivel = 0.0
 
-    // AUTO-GANANCIA digital: los perfiles sin AGC (VOICE_RECOGNITION/UNPROCESSED en
-    // Samsung) entregan señal muy baja; sin esto ni el VAD ni whisper "escuchan".
-    // Apunta los picos de voz recientes a ~-6 dBFS, sube suave y baja rápido si recorta.
+    // AUTO-GANANCIA digital GATEADA POR VOZ: los perfiles sin AGC entregan muy poco
+    // nivel; se amplifica hacia ~-6 dBFS pero la ganancia se calcula SOLO con los
+    // picos de habla (nunca sube durante silencio: amplificar el ruido de fondo
+    // rompía el medidor y la detección).
     private var ganancia = 1.0
-    private var picoSeguido = 2000.0
+    private var picoVoz = 8000.0
 
     /** true si el VAD neuronal está activo (false = detector de energía). */
     @Volatile var usandoVad = false
@@ -208,41 +211,48 @@ class CapturaAudio(
                 }
                 if (pedidoParar) break
 
-                // AUTO-GANANCIA: seguir el pico reciente de la señal cruda y llevar la
-                // voz a ~-6 dBFS (los perfiles sin AGC entregan muy poco nivel)
+                // métricas de la señal CRUDA: piso de ruido, silencio y candidato a voz
+                var suma0 = 0.0
                 var pico0 = 0
                 for (s in pcm) {
-                    val a = if (s < 0) (-s).toInt() else s.toInt()
+                    val v = s.toInt()
+                    suma0 += (v * v).toDouble()
+                    val a = if (v < 0) -v else v
                     if (a > pico0) pico0 = a
                 }
-                picoSeguido = max(pico0.toDouble(), picoSeguido * 0.995)  // decae ~8 s
-                val deseada = (16384.0 / max(picoSeguido, 200.0)).coerceIn(1.0, 12.0)
-                ganancia += (deseada - ganancia) * 0.05
+                val rms0 = sqrt(suma0 / FRAME)
+                if (rms0 < pisoRuido * 2.5) {
+                    pisoRuido = 0.95 * pisoRuido + 0.05 * max(rms0, 20.0)
+                }
+                val silencioso = rms0 < pisoRuido * 2.0
+                val vozPorEnergia = rms0 > pisoRuido * 3.0
+
+                // ganancia: solo aprende cuando HAY voz (gate); nunca sube con ruido
+                if (vozPorEnergia) {
+                    picoVoz = max(pico0.toDouble(), picoVoz * 0.995)
+                    val deseada = (16384.0 / max(picoVoz, 1200.0)).coerceIn(1.0, 12.0)
+                    ganancia += (deseada - ganancia) * 0.05
+                }
                 if (ganancia > 1.01) {
                     for (i in pcm.indices) {
                         val v = (pcm[i] * ganancia).toInt()
                         pcm[i] = v.coerceIn(-32768, 32767).toShort()
                     }
                 }
-
-                // métricas del PCM YA amplificado (lo mismo que se graba y oye el VAD)
-                var suma = 0.0
                 var pico = 0
                 for (s in pcm) {
-                    val v = s.toInt()
-                    suma += (v * v).toDouble()
-                    val a = if (v < 0) -v else v
+                    val a = if (s < 0) (-s).toInt() else s.toInt()
                     if (a > pico) pico = a
                 }
                 if (pico >= 32700) ganancia = max(1.0, ganancia * 0.85)  // recorta: bajar YA
-                val rms = sqrt(suma / FRAME)
-                // medidor en dB (el oído es logarítmico): -60 dBFS → 0, 0 dBFS → 100.
-                // Con voz normal (~-35..-20 dBFS) la barra vive en el 40-70 %.
-                val db = 20.0 * log10(max(rms, 1.0) / 32768.0)
-                val instante = ((db + 60.0) * 100.0 / 60.0).coerceIn(0.0, 100.0)
+                val saturado = pico >= 32200
+
+                // medidor por SNR: cuánto sobresale la señal del piso de ruido.
+                // Silencio ≈ 0-15 %, voz normal ≈ 50-90 % (30 dB de SNR = 100 %).
+                val snrDb = 20.0 * log10(max(rms0, 1.0) / max(pisoRuido, 1.0))
+                val instante = (snrDb * 100.0 / 30.0).coerceIn(0.0, 100.0)
                 envNivel = max(instante, envNivel * 0.93)  // caída ~500 ms
                 val nivel = envNivel.toInt()
-                val saturado = pico >= 32200
 
                 // VAD: decimar 48k→16k (promedio de a 3) y preguntar por HABLA
                 var esVoz: Boolean
@@ -258,15 +268,15 @@ class CapturaAudio(
                     } catch (e: Exception) {
                         vadRoto = true  // el modelo falló en runtime: energía para siempre
                         usandoVad = false
-                        esVozPorEnergia(rms)
+                        vozPorEnergia
                     }
                 } else {
-                    esVoz = esVozPorEnergia(rms)
+                    esVoz = vozPorEnergia
                 }
                 framesParte++
                 if (esVoz) hablaMsParte += 32
                 sumaNivelParte += nivel
-                listener.onFrame(nivel, esVoz, saturado)
+                listener.onFrame(nivel, esVoz, silencioso, saturado)
 
                 // encolar el PCM al encoder
                 val idx = codec.dequeueInputBuffer(10_000L)
@@ -307,9 +317,4 @@ class CapturaAudio(
         }
     }
 
-    /** Fallback sin VAD: energía contra un piso de ruido adaptativo (EMA). */
-    private fun esVozPorEnergia(rms: Double): Boolean {
-        if (rms < pisoRuido * 2) pisoRuido = 0.95 * pisoRuido + 0.05 * rms
-        return rms > max(pisoRuido * 3, 300.0)
-    }
 }

@@ -35,10 +35,31 @@ class VadSilero(ctx: Context, private val umbral: Float = 0.5f) {
     private var h = FloatArray(2 * 1 * 64)
     private var c = FloatArray(2 * 1 * 64)
 
-    private val srTensor: OnnxTensor = try {
-        OnnxTensor.createTensor(env, LongBuffer.wrap(longArrayOf(SR)), longArrayOf())  // escalar
-    } catch (e: Exception) {
-        OnnxTensor.createTensor(env, LongBuffer.wrap(longArrayOf(SR)), longArrayOf(1))
+    private var srTensor: OnnxTensor
+
+    init {
+        // el modelo puede querer "sr" como escalar (shape []) o como [1] según la
+        // versión: probar con una inferencia real de punta a punta (self-test) y
+        // quedarse con la que funcione. Si ninguna anda, el constructor lanza y el
+        // llamador cae al detector de energía DESDE EL ARRANQUE (visible), no a
+        // mitad de reunión.
+        var elegido: OnnxTensor? = null
+        var ultimo: Exception? = null
+        for (shape in listOf(longArrayOf(), longArrayOf(1))) {
+            val t = OnnxTensor.createTensor(env, LongBuffer.wrap(longArrayOf(SR)), shape)
+            try {
+                srTensor = t
+                prob(FloatArray(CHUNK))  // self-test
+                elegido = t
+                break
+            } catch (e: Exception) {
+                ultimo = e
+                t.close()
+            }
+        }
+        srTensor = elegido ?: throw IllegalStateException(
+            "self-test del VAD falló: ${ultimo?.message}")
+        reset()
     }
 
     fun reset() {

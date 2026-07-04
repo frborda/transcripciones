@@ -52,10 +52,11 @@ class RecordService : Service(), CapturaAudio.Listener {
         const val ACTION_FINISH = "com.fer.grabador.FINISH"
         const val ACTION_SHOW = "com.fer.grabador.SHOW"    // notificación persistente (reposo)
         const val ACTION_EXIT = "com.fer.grabador.EXIT"    // salir: cierra app y notificación
+        const val ACTION_TEST = "com.fer.grabador.TEST"    // prueba de mic (no graba ni sube)
         const val BC_SALIR = "com.fer.grabador.BC_SALIR"   // broadcast para cerrar la Activity
         const val CANAL = "grabacion"
 
-        const val PAUSA_CORTE_MS = 600     // sin habla seguida (VAD) para cortar, una pausa real
+        const val PAUSA_CORTE_MS = 700     // sin habla seguida (VAD+energía) para cortar
         const val MAX_ESPERA_MS = 30_000L  // si no hay pausa tras el intervalo, cortar igual
         const val TOPE_PARTE_MS = 45 * 60 * 1000L  // tope duro por parte (evita el 413 de Telegram)
         const val HABLA_MIN_MS = 1500L     // una parte con menos habla que esto NO se sube
@@ -71,9 +72,10 @@ class RecordService : Service(), CapturaAudio.Listener {
         @Volatile var tTotal = 0L
         @Volatile var subiendoAhora = ""
         @Volatile var grabandoArchivo = ""
-        @Volatile var nivelN = 0           // nivel RMS 0..100 (PCM real)
+        @Volatile var nivelN = 0           // nivel SNR 0..100 (señal sobre el ruido)
         @Volatile var hablaN = false       // el VAD detecta habla ahora
         @Volatile var vadN = false         // true = VAD neuronal activo (no energía)
+        @Volatile var probando = false     // modo prueba de micrófono (no graba nada)
     }
 
     private sealed class Trabajo {
@@ -123,8 +125,10 @@ class RecordService : Service(), CapturaAudio.Listener {
                 reprogramarAuto()
             }
             ACTION_FINISH -> finalizar()
-            ACTION_SHOW -> if (!corriendo) mostrarIdle()
+            ACTION_SHOW -> if (!corriendo && !probando) mostrarIdle()
             ACTION_EXIT -> salir()
+            ACTION_TEST -> if (probando) detenerTest(null)
+                           else if (!corriendo) empezarTest()
             // intent null = el sistema reinició el servicio (START_STICKY) tras matarlo:
             // si había una grabación en curso, retomarla; si no, quedarse en reposo
             else -> if (!corriendo && Prefs.sesionActiva(this).isNotEmpty()) iniciar()
@@ -147,6 +151,10 @@ class RecordService : Service(), CapturaAudio.Listener {
 
     /** Salir: cierra la Activity (broadcast), saca la notificación y apaga el servicio. */
     private fun salir() {
+        if (probando) {  // cerrar la prueba primero, después salir
+            detenerTest { salir() }
+            return
+        }
         if (corriendo) {
             estado = if (finalizando) "subiendo lo pendiente: esperá para salir"
                      else "grabación en curso: finalizá antes de salir"
@@ -158,10 +166,67 @@ class RecordService : Service(), CapturaAudio.Listener {
         stopSelf()
     }
 
+    // ---------- modo prueba: barra y detección en vivo, sin grabar ni subir ----------
+
+    private val testTimeout = Runnable { if (probando) detenerTest(null) }
+
+    private fun empezarTest() {
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                this, android.Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            estado = "falta permiso de micrófono: tocá Iniciar una vez para pedirlo"
+            mostrarIdle()
+            return
+        }
+        probando = true
+        crearCanal()
+        if (Build.VERSION.SDK_INT >= 30) {
+            startForeground(1, notif("Prueba de micrófono"),
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        } else {
+            startForeground(1, notif("Prueba de micrófono"))
+        }
+        val vad = try { VadSilero(this) } catch (e: Exception) { null }
+        estado = if (vad != null) "🎙 prueba: hablá y mirá la barra (VAD activo)"
+                 else "🎙 prueba: hablá y mirá la barra (VAD no cargó: energía)"
+        captura = CapturaAudio(fuenteElegida(), vad, this)
+            .also { it.iniciar(File(cacheDir, "test.m4a")) }
+        handler.postDelayed(testTimeout, 120_000)  // apagado solo a los 2 min
+    }
+
+    private fun detenerTest(continuar: (() -> Unit)?) {
+        probando = false
+        handler.removeCallbacks(testTimeout)
+        Thread {
+            try { captura?.detener() } catch (_: Exception) {}
+            captura = null
+            File(cacheDir, "test.m4a").delete()
+            nivelN = 0
+            hablaN = false
+            handler.post {
+                if (continuar != null) continuar()
+                else { estado = "listo para grabar"; mostrarIdle() }
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    /** Fuente de audio según preferencias y soporte del equipo. */
+    private fun fuenteElegida(): Int {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val soportaCruda =
+            am.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) == "true"
+        return if (Prefs.cruda(this) && soportaCruda) MediaRecorder.AudioSource.UNPROCESSED
+               else MediaRecorder.AudioSource.VOICE_RECOGNITION
+    }
+
     // ---------- ciclo de vida de la grabación ----------
 
     private fun iniciar() {
         if (corriendo) return
+        if (probando) {  // cerrar la prueba primero y arrancar de verdad después
+            detenerTest { iniciar() }
+            return
+        }
         if (androidx.core.content.ContextCompat.checkSelfPermission(
                 this, android.Manifest.permission.RECORD_AUDIO)
             != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -225,14 +290,6 @@ class RecordService : Service(), CapturaAudio.Listener {
     private fun empezarCaptura() {
         parte++
         val f = File(dirGrab(), "reunion_${sesion}_p" + "%03d".format(parte) + ".m4a")
-        // fuente: UNPROCESSED (100% crudo) si el usuario lo pidió y el equipo lo
-        // soporta (el S22 Ultra sí); si no, el perfil para reconocimiento de voz
-        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val soportaCruda =
-            am.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) == "true"
-        val fuente = if (Prefs.cruda(this) && soportaCruda)
-            MediaRecorder.AudioSource.UNPROCESSED
-        else MediaRecorder.AudioSource.VOICE_RECOGNITION
         // VAD neuronal; si no carga, CapturaAudio cae al detector de energía
         val vad = try { VadSilero(this) } catch (e: Exception) { null }
         if (vad == null) estado = "grabando (corte por energía: VAD no disponible)"
@@ -241,7 +298,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         cortePedido = false
         avisoDado = false
         bajosMs = 0; tapadoMs = 0; satMs = 0
-        captura = CapturaAudio(fuente, vad, this).also { it.iniciar(f) }
+        captura = CapturaAudio(fuenteElegida(), vad, this).also { it.iniciar(f) }
         parteN = parte
         tParte = System.currentTimeMillis()
         grabandoArchivo = f.name
@@ -289,7 +346,7 @@ class RecordService : Service(), CapturaAudio.Listener {
 
     // ---------- callbacks del motor de captura (hilo de captura) ----------
 
-    override fun onFrame(nivel: Int, esVoz: Boolean, saturado: Boolean) {
+    override fun onFrame(nivel: Int, esVoz: Boolean, silencioso: Boolean, saturado: Boolean) {
         nivelN = nivel
         hablaN = esVoz
         vadN = captura?.usandoVad ?: false
@@ -301,9 +358,10 @@ class RecordService : Service(), CapturaAudio.Listener {
             handler.post { if (corriendo && !finalizando) { rotar(); reprogramarAuto() } }
             return
         }
-        // corte armado: esperar una PAUSA DE HABLA real (VAD), con tope de espera
+        // corte armado: SOLO cuando VAD y energía COINCIDEN en que es una pausa
+        // (si cualquiera de los dos cree que hay voz, no se corta), con tope de espera
         if (armado && !cortePedido) {
-            if (esVoz) bajosMs = 0 else bajosMs += 32
+            if (esVoz || !silencioso) bajosMs = 0 else bajosMs += 32
             val vencio = SystemClock.elapsedRealtime() - armadoDesde > MAX_ESPERA_MS
             if (bajosMs >= PAUSA_CORTE_MS || vencio) {
                 cortePedido = true
@@ -327,6 +385,10 @@ class RecordService : Service(), CapturaAudio.Listener {
     }
 
     override fun onParteCerrada(parte: CapturaAudio.ParteCerrada) {
+        if (probando) {  // modo prueba: nada se conserva ni se sube
+            parte.file.delete()
+            return
+        }
         // una parte casi sin habla no se sube: se aparta (menos datos y menos GPU).
         // DOBLE condición: sin habla según el VAD *y* nivel medio realmente bajo —
         // si el detector quedara ciego (señal baja, modelo caído), la parte se sube
@@ -346,6 +408,11 @@ class RecordService : Service(), CapturaAudio.Listener {
     }
 
     override fun onError(msg: String) {
+        if (probando) {
+            estado = "ERROR en la prueba: $msg"
+            handler.post { detenerTest(null) }
+            return
+        }
         estado = "ERROR captura: $msg (reintentando)"
         handler.post {
             notificar(estado)
@@ -571,6 +638,8 @@ class RecordService : Service(), CapturaAudio.Listener {
 
     override fun onDestroy() {
         handler.removeCallbacks(corteAuto)
+        handler.removeCallbacks(testTimeout)
+        probando = false
         uploaderActivo = false        // frenar el hilo de subidas (evita hilos huérfanos)
         uploader?.interrupt()
         captura?.abortar()

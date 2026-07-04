@@ -33,6 +33,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvPartes: TextView
     private lateinit var dotEstado: View
     private lateinit var pbNivel: com.google.android.material.progressindicator.LinearProgressIndicator
+    private lateinit var btnTest: Button
+    private var player: android.media.MediaPlayer? = null
+    private var reproduciendo: String = ""
 
     // el Salir de la notificación también cierra esta pantalla
     private val salirReceiver = object : BroadcastReceiver() {
@@ -44,12 +47,18 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             val est = RecordService.estado
             tvEstado.text = est
-            if (RecordService.corriendo) {
+            val activo = RecordService.corriendo || RecordService.probando
+            if (activo) {
                 val ahora = System.currentTimeMillis()
-                tvTimer.text = "parte ${fmtSeg((ahora - RecordService.tParte) / 1000)}" +
-                        "  ·  total ${fmtSeg((ahora - RecordService.tTotal) / 1000)}" +
-                        (if (RecordService.vadN) "  ·  VAD" else "  ·  energía") +
-                        (if (RecordService.hablaN) " 🗣" else "")
+                tvTimer.text = if (RecordService.probando) {
+                    (if (RecordService.vadN) "VAD" else "energía") +
+                            (if (RecordService.hablaN) "  🗣 hablando" else "  (silencio)")
+                } else {
+                    "parte ${fmtSeg((ahora - RecordService.tParte) / 1000)}" +
+                            "  ·  total ${fmtSeg((ahora - RecordService.tTotal) / 1000)}" +
+                            (if (RecordService.vadN) "  ·  VAD" else "  ·  energía") +
+                            (if (RecordService.hablaN) " 🗣" else "")
+                }
                 tvTimer.visibility = View.VISIBLE
                 pbNivel.visibility = View.VISIBLE
                 pbNivel.setProgressCompat(RecordService.nivelN, true)
@@ -57,6 +66,8 @@ class MainActivity : AppCompatActivity() {
                 tvTimer.visibility = View.GONE
                 pbNivel.visibility = View.GONE
             }
+            btnTest.text = if (RecordService.probando) "Detener" else "Probar"
+            btnTest.visibility = if (RecordService.corriendo) View.GONE else View.VISIBLE
             dotEstado.backgroundTintList = ColorStateList.valueOf(
                 ContextCompat.getColor(this@MainActivity, colorEstado(est)))
             tvPartes.text = listaPartes()
@@ -115,12 +126,15 @@ class MainActivity : AppCompatActivity() {
         tvPartes = findViewById(R.id.tvPartes)
         dotEstado = findViewById(R.id.dotEstado)
         pbNivel = findViewById(R.id.pbNivel)
+        btnTest = findViewById(R.id.btnTest)
 
         findViewById<Button>(R.id.btnIniciar).setOnClickListener { iniciar() }
         findViewById<Button>(R.id.btnCortar).setOnClickListener { servicio(RecordService.ACTION_CUT) }
         findViewById<Button>(R.id.btnFinalizar).setOnClickListener { confirmarFinalizar() }
         findViewById<ImageButton>(R.id.btnConfig).setOnClickListener { abrirConfig() }
         findViewById<ImageButton>(R.id.btnSalir).setOnClickListener { salir() }
+        findViewById<ImageButton>(R.id.btnEscuchar).setOnClickListener { abrirPartes() }
+        btnTest.setOnClickListener { probarMic() }
 
         ContextCompat.registerReceiver(this, salirReceiver,
             IntentFilter(RecordService.BC_SALIR), ContextCompat.RECEIVER_NOT_EXPORTED)
@@ -147,6 +161,78 @@ class MainActivity : AppCompatActivity() {
     private fun mostrarNotificacion() {
         ContextCompat.startForegroundService(
             this, Intent(this, RecordService::class.java).setAction(RecordService.ACTION_SHOW))
+    }
+
+    /** Prueba de micrófono: barra y detección en vivo, sin grabar ni subir nada. */
+    private fun probarMic() {
+        if (RecordService.corriendo) return
+        if (!RecordService.probando &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 3)
+            return
+        }
+        ContextCompat.startForegroundService(
+            this, Intent(this, RecordService::class.java).setAction(RecordService.ACTION_TEST))
+    }
+
+    /** Lista de partes de la sesión para ESCUCHARLAS (toque = reproducir/parar). */
+    private fun abrirPartes() {
+        val dir = File(getExternalFilesDir(null), "grabaciones")
+        val archivos = dir.listFiles { f ->
+            f.name.contains("reunion_") && f.name.endsWith(".m4a") &&
+                    f.name != RecordService.grabandoArchivo
+        }?.sortedBy {
+            it.name.removePrefix("ok_").removePrefix("silencio_").removePrefix("fallo_")
+        } ?: emptyList()
+        if (archivos.isEmpty()) {
+            toast("Todavía no hay partes grabadas")
+            return
+        }
+        val etiquetas = archivos.map { f ->
+            val nro = f.name.substringAfterLast("_p").substringBefore(".").toIntOrNull() ?: 0
+            val mb = "%.1f".format(f.length() / 1048576.0)
+            val marca = when {
+                f.name.startsWith("ok_") -> "✅"
+                f.name.startsWith("silencio_") -> "🔇"
+                f.name.startsWith("fallo_") -> "⛔"
+                else -> "📦"
+            }
+            "parte %02d · %s MB · %s".format(nro, mb, marca)
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Escuchar partes (tocá para reproducir)")
+            .setItems(etiquetas) { _, i -> reproducir(archivos[i]) }
+            .setPositiveButton("Cerrar", null)
+            .setOnDismissListener { pararPlayer() }
+            .show()
+    }
+
+    private fun reproducir(f: File) {
+        if (reproduciendo == f.absolutePath) {  // tocar la misma = parar
+            pararPlayer()
+            return
+        }
+        pararPlayer()
+        try {
+            player = android.media.MediaPlayer().apply {
+                setDataSource(f.absolutePath)
+                prepare()
+                start()
+                setOnCompletionListener { pararPlayer() }
+            }
+            reproduciendo = f.absolutePath
+            toast("▶ ${f.name.removePrefix("ok_").removePrefix("silencio_")}")
+        } catch (e: Exception) {
+            toast("No se pudo reproducir: ${e.message}")
+        }
+    }
+
+    private fun pararPlayer() {
+        try { player?.stop() } catch (e: Exception) { }
+        try { player?.release() } catch (e: Exception) { }
+        player = null
+        reproduciendo = ""
     }
 
     /** Salir (app o notificación): pide confirmación para no salir sin querer. */
@@ -252,6 +338,7 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         handler.removeCallbacks(refresco)
+        pararPlayer()
     }
 
     private fun iniciar() {
@@ -282,6 +369,8 @@ class MainActivity : AppCompatActivity() {
             toast("Sin permiso de micrófono no puedo grabar")
         } else if (code == 2) {
             mostrarNotificacion()  // recién ahora la notificación puede verse
+        } else if (code == 3 && res.isNotEmpty() && res[0] == PackageManager.PERMISSION_GRANTED) {
+            probarMic()
         }
     }
 
