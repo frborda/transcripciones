@@ -71,6 +71,10 @@ class CapturaAudio(
     // ganancia converge en ~1 s en vez de tardar 10 s decayendo desde un valor alto
     private var picoVoz = 600.0
 
+    // el VAD del frame anterior también habilita el aprendizaje de ganancia:
+    // la voz LEJANA no supera el gate de energía pero el VAD sí la ve
+    private var ultimoEsVoz = false
+
     /** true si el VAD neuronal está activo (false = detector de energía). */
     @Volatile var usandoVad = false
         private set
@@ -239,7 +243,7 @@ class CapturaAudio(
                 // ganancia: solo aprende cuando HAY voz (gate); nunca sube con ruido.
                 // Tope x30: en el S22U los perfiles sin AGC entregan voz tan baja que
                 // con x12 el archivo quedaba inaudible.
-                if (vozPorEnergia) {
+                if (vozPorEnergia || ultimoEsVoz) {
                     picoVoz = max(pico0.toDouble(), picoVoz * 0.995)
                     val deseada = (16384.0 / max(picoVoz, 600.0)).coerceIn(1.0, 30.0)
                     ganancia += (deseada - ganancia) * 0.15  // converge en ~1 s de voz
@@ -272,9 +276,20 @@ class CapturaAudio(
                 if (!vadRoto) {
                     var j = 0
                     var i = 0
+                    var maxAbs = 0f
                     while (j < VadSilero.CHUNK) {
-                        chunkVad[j] = (pcm[i] + pcm[i + 1] + pcm[i + 2]) / (3f * 32768f)
+                        val v = (pcm[i] + pcm[i + 1] + pcm[i + 2]) / (3f * 32768f)
+                        chunkVad[j] = v
+                        val a = if (v < 0) -v else v
+                        if (a > maxAbs) maxAbs = a
                         i += 3; j++
+                    }
+                    // normalizar la ENTRADA del VAD (independiente de la grabación):
+                    // la voz LEJANA/baja llega a Silero a nivel sano y la detecta;
+                    // el ruido amplificado lo rechaza igual (para eso es neuronal)
+                    if (maxAbs > 1e-4f && maxAbs < 0.5f) {
+                        val escala = minOf(0.5f / maxAbs, 40f)
+                        for (k in 0 until VadSilero.CHUNK) chunkVad[k] *= escala
                     }
                     esVoz = try {
                         vad!!.esVoz(chunkVad)
@@ -286,6 +301,7 @@ class CapturaAudio(
                 } else {
                     esVoz = vozPorEnergia
                 }
+                ultimoEsVoz = esVoz
                 framesParte++
                 if (esVoz) hablaMsParte += 32
                 sumaNivelParte += nivel

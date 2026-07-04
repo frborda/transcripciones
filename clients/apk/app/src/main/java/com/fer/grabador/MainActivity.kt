@@ -34,8 +34,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var dotEstado: View
     private lateinit var pbNivel: com.google.android.material.progressindicator.LinearProgressIndicator
     private lateinit var btnTest: Button
-    private var player: android.media.MediaPlayer? = null
-    private var reproduciendo: String = ""
 
     // el Salir de la notificación también cierra esta pantalla
     private val salirReceiver = object : BroadcastReceiver() {
@@ -205,43 +203,24 @@ class MainActivity : AppCompatActivity() {
             "parte %02d · %s MB · %s".format(nro, mb, marca)
         }.toTypedArray()
         MaterialAlertDialogBuilder(this)
-            .setTitle("Escuchar partes (tocá para reproducir)")
-            .setItems(etiquetas) { _, i -> reproducir(archivos[i]) }
+            .setTitle("Partes (tocá para abrir con tu reproductor)")
+            .setItems(etiquetas) { _, i -> abrirExterno(archivos[i]) }
             .setPositiveButton("Cerrar", null)
-            .setOnDismissListener { pararPlayer() }
             .show()
     }
 
-    private fun reproducir(f: File) {
-        if (reproduciendo == f.absolutePath) {  // tocar la misma = parar
-            pararPlayer()
-            return
-        }
-        pararPlayer()
+    /** Abre la parte con un reproductor EXTERNO (elegís la app en el chooser). */
+    private fun abrirExterno(f: File) {
         try {
-            player = android.media.MediaPlayer().apply {
-                setAudioAttributes(android.media.AudioAttributes.Builder()
-                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build())
-                setDataSource(f.absolutePath)
-                prepare()
-                setVolume(1f, 1f)
-                start()
-                setOnCompletionListener { pararPlayer() }
-            }
-            reproduciendo = f.absolutePath
-            toast("▶ ${f.name.removePrefix("ok_").removePrefix("silencio_")}")
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                this, "com.fer.grabador.fileprovider", f)
+            val i = Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "audio/mp4")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(Intent.createChooser(i, "Reproducir con"))
         } catch (e: Exception) {
-            toast("No se pudo reproducir: ${e.message}")
+            toast("No se pudo abrir: ${e.message}")
         }
-    }
-
-    private fun pararPlayer() {
-        try { player?.stop() } catch (e: Exception) { }
-        try { player?.release() } catch (e: Exception) { }
-        player = null
-        reproduciendo = ""
     }
 
     /** Salir (app o notificación): pide confirmación para no salir sin querer. */
@@ -347,7 +326,6 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         handler.removeCallbacks(refresco)
-        pararPlayer()
     }
 
     private fun iniciar() {
