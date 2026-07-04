@@ -320,26 +320,34 @@ class MainActivity : AppCompatActivity() {
     /** Lista de partes de la sesión para ESCUCHARLAS (toque = reproducir/parar). */
     private fun abrirPartes() {
         val dir = File(getExternalFilesDir(null), "grabaciones")
-        val archivos = dir.listFiles { f ->
+        val partes = dir.listFiles { f ->
             f.name.contains("reunion_") && f.name.endsWith(".m4a") &&
                     f.name != RecordService.grabandoArchivo
         }?.sortedBy {
             it.name.removePrefix("ok_").removePrefix("silencio_").removePrefix("fallo_")
         } ?: emptyList()
+        // la última prueba de mic va primero: escucharla dice si la app está
+        // RECIBIENDO la voz (si acá no se te escucha, el problema es la captura)
+        val prueba = File(dir, "prueba_mic.m4a")
+        val archivos = (if (prueba.exists()) listOf(prueba) else emptyList()) + partes
         if (archivos.isEmpty()) {
             toast("Todavía no hay partes grabadas")
             return
         }
         val etiquetas = archivos.map { f ->
-            val nro = f.name.substringAfterLast("_p").substringBefore(".").toIntOrNull() ?: 0
             val mb = "%.1f".format(f.length() / 1048576.0)
-            val marca = when {
-                f.name.startsWith("ok_") -> "✅"
-                f.name.startsWith("silencio_") -> "🔇"
-                f.name.startsWith("fallo_") -> "⛔"
-                else -> "📦"
+            if (f.name == "prueba_mic.m4a") {
+                "última prueba de mic · $mb MB · 🎙"
+            } else {
+                val nro = f.name.substringAfterLast("_p").substringBefore(".").toIntOrNull() ?: 0
+                val marca = when {
+                    f.name.startsWith("ok_") -> "✅"
+                    f.name.startsWith("silencio_") -> "🔇"
+                    f.name.startsWith("fallo_") -> "⛔"
+                    else -> "📦"
+                }
+                "parte %02d · %s MB · %s".format(nro, mb, marca)
             }
-            "parte %02d · %s MB · %s".format(nro, mb, marca)
         }.toTypedArray()
         MaterialAlertDialogBuilder(this)
             .setTitle("Partes (tocá para abrir con tu reproductor)")

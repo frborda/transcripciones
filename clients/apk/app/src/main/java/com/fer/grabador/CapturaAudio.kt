@@ -115,6 +115,11 @@ class CapturaAudio(
     @Volatile var probVoz = 0f
         private set
 
+    /** true si el SISTEMA está silenciando esta captura (otra app tiene el mic,
+     *  p. ej. el grabador de pantalla con audio de micrófono activado). */
+    @Volatile var micSilenciado = false
+        private set
+
     // suavizado de la probabilidad: ataque instantáneo, caída ~200 ms. La voz
     // LEJANA/reverberante hace fluctuar a Silero entre sílabas; sin puentear esos
     // huecos hay que hablar fuerte para sostener la detección.
@@ -335,6 +340,25 @@ class CapturaAudio(
                                 AudioFormat.ENCODING_PCM_16BIT, max(minBuf, SR))  // buffer ~1 s
             if (audio.state != AudioRecord.STATE_INITIALIZED)
                 throw IllegalStateException("AudioRecord no inicializó (¿mic ocupado?)")
+
+            // avisar si el SISTEMA nos silencia (captura concurrente: el grabador
+            // de pantalla con "audio del micrófono" se queda con el mic y a esta
+            // app le llega silencio/ruido — el VAD da 0.00 aunque se hable)
+            if (Build.VERSION.SDK_INT >= 29) {
+                try {
+                    val sesionId = audio.audioSessionId
+                    audio.registerAudioRecordingCallback(
+                        java.util.concurrent.Executor { it.run() },
+                        object : android.media.AudioManager.AudioRecordingCallback() {
+                            override fun onRecordingConfigChanged(
+                                configs: MutableList<android.media.AudioRecordingConfiguration>) {
+                                micSilenciado = configs.any {
+                                    it.clientAudioSessionId == sesionId && it.isClientSilenced
+                                }
+                            }
+                        })
+                } catch (_: Exception) {}
+            }
 
             // captación DIRECCIONAL solo si se pidió (sala con eco). Con eco
             // apagado NO se toca el enrutado de mics: pedir campo "amplio"

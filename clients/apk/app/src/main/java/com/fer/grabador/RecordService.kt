@@ -341,7 +341,19 @@ class RecordService : Service(), CapturaAudio.Listener {
             try { capTest?.detener() } catch (_: Exception) {}
             probando = false
             if (captura === capTest) captura = null  // no pisar una captura nueva
-            File(cacheDir, "test.m4a").delete()
+            // conservar la ÚLTIMA prueba para poder ESCUCHAR lo que oyó la app
+            // (diagnóstico clave: si ahí no está tu voz, el problema es la
+            // captura del equipo, no el detector)
+            try {
+                val t = File(cacheDir, "test.m4a")
+                if (t.exists()) {
+                    val dir = File(getExternalFilesDir(null), "grabaciones").apply { mkdirs() }
+                    val destino = File(dir, "prueba_mic.m4a")
+                    destino.delete()
+                    t.copyTo(destino, overwrite = true)
+                    t.delete()
+                }
+            } catch (_: Exception) { File(cacheDir, "test.m4a").delete() }
             nivelN = 0
             hablaN = false
             handler.post {
@@ -507,6 +519,14 @@ class RecordService : Service(), CapturaAudio.Listener {
             ganN = c.gananciaActual
             probN = c.probVoz
             calidadN = c.calidadVoz
+            // el sistema nos silenció el mic (otra app lo tiene): avisar YA —
+            // es la causa típica de "detección en cero" al grabar la pantalla
+            if (c.micSilenciado && !estado.startsWith("⚠ mic")) {
+                estado = "⚠ mic silenciado por otra app (¿grabador de pantalla?)"
+            } else if (!c.micSilenciado && estado.startsWith("⚠ mic")) {
+                estado = if (probando) "🎙 prueba: hablá y mirá la barra"
+                         else "grabando parte $parte"
+            }
         }
         if (!corriendo || finalizando) return
 
