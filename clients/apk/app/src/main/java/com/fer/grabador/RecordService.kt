@@ -401,6 +401,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         }
         if (parte.file.length() > 2000) {
             cola.put(Trabajo.Audio(parte.file))
+            arrancarUploader()  // auto-reparación: si el hilo de subidas murió, revive
         } else {
             parte.file.delete()  // vacía/corrupta: que no la reencole una retoma
         }
@@ -500,59 +501,73 @@ class RecordService : Service(), CapturaAudio.Listener {
     private fun esPermanente(code: Int) = code in 400..499 && code != 429
 
     private fun arrancarUploader() {
-        if (uploaderActivo) return   // no arrancar dos uploaders sobre la misma cola
+        // guard por VIDA REAL del hilo (no por flag): si el hilo murió por lo que
+        // fuera, el próximo llamado lo revive y la cola nunca queda huérfana.
+        if (uploader?.isAlive == true) return
         uploaderActivo = true
         uploader = Thread {
-            val token = Prefs.token(this)
-            val chat = Prefs.chatId(this)
             while (uploaderActivo) {
                 val t = try { cola.take() } catch (e: InterruptedException) { break }
-                when (t) {
-                    is Trabajo.Audio -> {
-                        subiendoAhora = t.f.name
-                        var intento = 0
-                        var permanente = false
-                        while (true) {
-                            val code = TelegramApi.sendDocument(token, chat, t.f)
-                            if (code == 200) break
-                            if (esPermanente(code)) { permanente = true; break }
-                            intento++
-                            estado = "sin conexión, reintento ${intento} (${t.f.name})"
-                            Thread.sleep(if (intento > 12) 60_000L else 5_000L * intento)
-                        }
-                        if (permanente) {
-                            t.f.renameTo(File(t.f.parentFile, "fallo_" + t.f.name))
-                            estado = "ERROR al subir ${t.f.name}: revisá token, chat id o tamaño"
-                            notificar(estado)
-                        } else {
-                            t.f.renameTo(File(t.f.parentFile, "ok_" + t.f.name))
-                        }
-                        subiendoAhora = ""
-                        pendientesN = pendientes()
-                        if (!permanente) {
-                            if (!finalizando) {
-                                estado = "grabando (parte $parte)"
-                            } else {
-                                val resta = pendientes()
-                                estado = if (resta > 0) "subiendo lo pendiente ($resta restante(s))..."
-                                         else "última parte enviada, avisando a la PC..."
+                try {
+                    // credenciales FRESCAS por trabajo: si el usuario corrige la config
+                    // con subidas pendientes, se usan al siguiente intento
+                    val token = Prefs.token(this)
+                    val chat = Prefs.chatId(this)
+                    when (t) {
+                        is Trabajo.Audio -> {
+                            subiendoAhora = t.f.name
+                            var intento = 0
+                            var permanente = false
+                            while (uploaderActivo) {
+                                val code = TelegramApi.sendDocument(token, chat, t.f)
+                                if (code == 200) break
+                                if (esPermanente(code)) { permanente = true; break }
+                                intento++
+                                val detalle = if (code == -1) "sin red" else "HTTP $code"
+                                estado = "reintento $intento ($detalle) — ${t.f.name}"
+                                Thread.sleep(if (intento > 12) 60_000L else 5_000L * intento)
+                            }
+                            if (permanente) {
+                                t.f.renameTo(File(t.f.parentFile, "fallo_" + t.f.name))
+                                estado = "ERROR al subir ${t.f.name}: revisá token, chat id o tamaño"
                                 notificar(estado)
+                            } else {
+                                t.f.renameTo(File(t.f.parentFile, "ok_" + t.f.name))
+                            }
+                            subiendoAhora = ""
+                            pendientesN = pendientes()
+                            if (!permanente) {
+                                if (!finalizando) {
+                                    estado = "grabando (parte $parte)"
+                                } else {
+                                    val resta = pendientes()
+                                    estado = if (resta > 0) "subiendo lo pendiente ($resta restante(s))..."
+                                             else "última parte enviada, avisando a la PC..."
+                                    notificar(estado)
+                                }
                             }
                         }
-                    }
-                    is Trabajo.Texto -> {
-                        var intento = 0
-                        while (true) {
-                            val code = TelegramApi.sendMessage(token, chat, t.t)
-                            if (code == 200 || esPermanente(code)) break
-                            intento++
-                            Thread.sleep(if (intento > 12) 60_000L else 5_000L * intento)
+                        is Trabajo.Texto -> {
+                            var intento = 0
+                            while (uploaderActivo) {
+                                val code = TelegramApi.sendMessage(token, chat, t.t)
+                                if (code == 200 || esPermanente(code)) break
+                                intento++
+                                Thread.sleep(if (intento > 12) 60_000L else 5_000L * intento)
+                            }
+                        }
+                        is Trabajo.Fin -> {
+                            handler.post { terminarServicio() }
+                            return@Thread
                         }
                     }
-                    is Trabajo.Fin -> {
-                        handler.post { terminarServicio() }
-                        return@Thread
-                    }
+                } catch (e: InterruptedException) {
+                    break
+                } catch (e: Exception) {
+                    // el hilo de subidas NUNCA muere en silencio: reencolar y seguir
+                    estado = "ERROR subiendo: ${e.message ?: e.javaClass.simpleName} (reintento)"
+                    if (t is Trabajo.Audio && t.f.exists()) cola.put(t)
+                    try { Thread.sleep(5000) } catch (ie: InterruptedException) { break }
                 }
             }
         }.apply { isDaemon = true }
