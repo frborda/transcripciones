@@ -234,8 +234,16 @@ class CapturaAudio(
                     if (a > pico0) pico0 = a
                 }
                 val rms0 = sqrt(suma0 / FRAME)
-                if (rms0 < pisoRuido * 2.5) {
-                    pisoRuido = 0.95 * pisoRuido + 0.05 * max(rms0, 20.0)
+                // piso de ruido: aprende SOLO cuando NO hay voz (según el VAD del
+                // frame anterior). Aprender de los valles entre sílabas hacía subir
+                // el piso durante habla continua: la barra caía, cada vez más frames
+                // parecían "silencio" y terminaba cortando a mitad de frase.
+                // Baja rápido (recuperarse de un pico de ruido), sube MUY lento.
+                if (!ultimoEsVoz && rms0 < pisoRuido * 2.5) {
+                    pisoRuido = if (rms0 < pisoRuido)
+                        0.90 * pisoRuido + 0.10 * max(rms0, 20.0)
+                    else
+                        0.995 * pisoRuido + 0.005 * max(rms0, 20.0)
                 }
                 val silencioso = rms0 < pisoRuido * 2.0
                 val vozPorEnergia = rms0 > pisoRuido * 3.0
