@@ -9,6 +9,7 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import java.io.File
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.log10
 import kotlin.math.max
@@ -70,6 +71,12 @@ class CapturaAudio(
 
     /** true si el VAD neuronal está activo (false = detector de energía). */
     @Volatile var usandoVad = false
+        private set
+
+    // telemetría para el modo prueba: nivel crudo del mic y ganancia aplicada
+    @Volatile var dbCrudo = -90
+        private set
+    @Volatile var gananciaActual = 1.0
         private set
 
     fun iniciar(primerArchivo: File) {
@@ -227,12 +234,16 @@ class CapturaAudio(
                 val silencioso = rms0 < pisoRuido * 2.0
                 val vozPorEnergia = rms0 > pisoRuido * 3.0
 
-                // ganancia: solo aprende cuando HAY voz (gate); nunca sube con ruido
+                // ganancia: solo aprende cuando HAY voz (gate); nunca sube con ruido.
+                // Tope x30: en el S22U los perfiles sin AGC entregan voz tan baja que
+                // con x12 el archivo quedaba inaudible.
                 if (vozPorEnergia) {
                     picoVoz = max(pico0.toDouble(), picoVoz * 0.995)
-                    val deseada = (16384.0 / max(picoVoz, 1200.0)).coerceIn(1.0, 12.0)
+                    val deseada = (16384.0 / max(picoVoz, 600.0)).coerceIn(1.0, 30.0)
                     ganancia += (deseada - ganancia) * 0.05
                 }
+                dbCrudo = (20.0 * log10(max(rms0, 1.0) / 32768.0)).toInt()
+                gananciaActual = ganancia
                 if (ganancia > 1.01) {
                     for (i in pcm.indices) {
                         val v = (pcm[i] * ganancia).toInt()
@@ -283,6 +294,7 @@ class CapturaAudio(
                 if (idx >= 0) {
                     val bb: ByteBuffer = codec.getInputBuffer(idx)!!
                     bb.clear()
+                    bb.order(ByteOrder.LITTLE_ENDIAN)  // PCM16 es little-endian SIEMPRE
                     for (s in pcm) { bb.putShort(s) }
                     val ptsUs = muestrasTotales * 1_000_000L / SR
                     codec.queueInputBuffer(idx, 0, FRAME * 2, ptsUs, 0)

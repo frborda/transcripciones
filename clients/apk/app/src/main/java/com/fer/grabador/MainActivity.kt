@@ -52,7 +52,9 @@ class MainActivity : AppCompatActivity() {
                 val ahora = System.currentTimeMillis()
                 tvTimer.text = if (RecordService.probando) {
                     (if (RecordService.vadN) "VAD" else "energía") +
-                            (if (RecordService.hablaN) "  🗣 hablando" else "  (silencio)")
+                            (if (RecordService.hablaN) "  🗣 hablando" else "  (silencio)") +
+                            "  ·  mic %d dB · ×%.0f".format(
+                                RecordService.dbCrudoN, RecordService.ganN)
                 } else {
                     "parte ${fmtSeg((ahora - RecordService.tParte) / 1000)}" +
                             "  ·  total ${fmtSeg((ahora - RecordService.tTotal) / 1000)}" +
@@ -216,8 +218,13 @@ class MainActivity : AppCompatActivity() {
         pararPlayer()
         try {
             player = android.media.MediaPlayer().apply {
+                setAudioAttributes(android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build())
                 setDataSource(f.absolutePath)
                 prepare()
+                setVolume(1f, 1f)
                 start()
                 setOnCompletionListener { pararPlayer() }
             }

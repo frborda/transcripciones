@@ -76,6 +76,8 @@ class RecordService : Service(), CapturaAudio.Listener {
         @Volatile var hablaN = false       // el VAD detecta habla ahora
         @Volatile var vadN = false         // true = VAD neuronal activo (no energía)
         @Volatile var probando = false     // modo prueba de micrófono (no graba nada)
+        @Volatile var dbCrudoN = -90       // nivel crudo del mic (dBFS), para la prueba
+        @Volatile var ganN = 1.0           // ganancia digital aplicada, para la prueba
     }
 
     private sealed class Trabajo {
@@ -194,16 +196,24 @@ class RecordService : Service(), CapturaAudio.Listener {
         handler.postDelayed(testTimeout, 120_000)  // apagado solo a los 2 min
     }
 
+    @Volatile private var cerrandoTest = false
+
     private fun detenerTest(continuar: (() -> Unit)?) {
-        probando = false
+        if (cerrandoTest) return  // ya hay un cierre en curso (doble toque)
+        cerrandoTest = true
         handler.removeCallbacks(testTimeout)
         Thread {
-            try { captura?.detener() } catch (_: Exception) {}
-            captura = null
+            // 'probando' queda en true HASTA cerrar la captura: el onParteCerrada
+            // del cierre debe verlo activo para descartar el archivo de prueba
+            val capTest = captura
+            try { capTest?.detener() } catch (_: Exception) {}
+            probando = false
+            if (captura === capTest) captura = null  // no pisar una captura nueva
             File(cacheDir, "test.m4a").delete()
             nivelN = 0
             hablaN = false
             handler.post {
+                cerrandoTest = false
                 if (continuar != null) continuar()
                 else { estado = "listo para grabar"; mostrarIdle() }
             }
@@ -349,7 +359,11 @@ class RecordService : Service(), CapturaAudio.Listener {
     override fun onFrame(nivel: Int, esVoz: Boolean, silencioso: Boolean, saturado: Boolean) {
         nivelN = nivel
         hablaN = esVoz
-        vadN = captura?.usandoVad ?: false
+        captura?.let { c ->
+            vadN = c.usandoVad
+            dbCrudoN = c.dbCrudo
+            ganN = c.gananciaActual
+        }
         if (!corriendo || finalizando) return
 
         // tope duro por parte
@@ -385,7 +399,13 @@ class RecordService : Service(), CapturaAudio.Listener {
     }
 
     override fun onParteCerrada(parte: CapturaAudio.ParteCerrada) {
-        if (probando) {  // modo prueba: nada se conserva ni se sube
+        // modo prueba: nada se conserva ni se sube. El chequeo por CARPETA es el
+        // decisivo: el archivo de prueba vive en cacheDir (las partes reales en
+        // grabaciones/), así que no depende del timing del flag 'probando' — que
+        // ya era false cuando el cierre del test llegaba acá y el test.m4a se
+        // encolaba, se borraba, y el uploader quedaba reintentando un fantasma
+        // que frenaba TODA la cola.
+        if (probando || parte.file.absolutePath.startsWith(cacheDir.absolutePath)) {
             parte.file.delete()
             return
         }
