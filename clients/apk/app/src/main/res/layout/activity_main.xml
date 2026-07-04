@@ -204,6 +204,14 @@
         android:text="Finalizar y procesar"
         app:icon="@drawable/ic_stop" />
 
+    <!-- gráfico en vivo de la detección de voz (30 s); alto y ancho se fijan en código -->
+    <com.fer.grabador.GraficoVoz
+        android:id="@+id/grafico"
+        android:layout_width="match_parent"
+        android:layout_height="110dp"
+        android:layout_marginTop="10dp"
+        android:visibility="gone" />
+
     <!-- ===== Partes de la sesión (ocupa el resto; la lista scrollea ADENTRO) ===== -->
     <com.google.android.material.card.MaterialCardView
         android:layout_width="match_parent"

@@ -36,6 +36,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnTest: Button
     private lateinit var filaSupresion: View
     private lateinit var ledVoz: View
+    private lateinit var grafico: GraficoVoz
+
+    // muestreo del gráfico a 10 Hz (independiente del refresco de textos)
+    private val muestreoGrafico = object : Runnable {
+        override fun run() {
+            if (RecordService.corriendo || RecordService.probando) {
+                grafico.push(RecordService.probN, RecordService.hablaN)
+            }
+            handler.postDelayed(this, 100)
+        }
+    }
 
     // el Salir de la notificación también cierra esta pantalla
     private val salirReceiver = object : BroadcastReceiver() {
@@ -67,6 +78,7 @@ class MainActivity : AppCompatActivity() {
                 pbNivel.visibility = View.VISIBLE
                 pbNivel.setProgressCompat(RecordService.nivelN, true)
                 filaSupresion.visibility = View.VISIBLE
+                grafico.visibility = View.VISIBLE
                 // LED de voz: verde detectando, gris en pausa (para calibrar el slider)
                 ledVoz.background.mutate().setTint(
                     ContextCompat.getColor(this@MainActivity,
@@ -75,6 +87,10 @@ class MainActivity : AppCompatActivity() {
                 tvTimer.visibility = View.GONE
                 pbNivel.visibility = View.GONE
                 filaSupresion.visibility = View.GONE
+                if (grafico.visibility == View.VISIBLE) {
+                    grafico.visibility = View.GONE
+                    grafico.reset()  // la próxima sesión arranca con la ventana limpia
+                }
             }
             btnTest.text = if (RecordService.probando) "Detener" else "Probar"
             btnTest.visibility = if (RecordService.corriendo) View.GONE else View.VISIBLE
@@ -139,6 +155,16 @@ class MainActivity : AppCompatActivity() {
         btnTest = findViewById(R.id.btnTest)
         filaSupresion = findViewById(R.id.filaSupresion)
         ledVoz = findViewById(R.id.ledVoz)
+        grafico = findViewById(R.id.grafico)
+        // alto ~18 % de la pantalla (tope 20 %) y ancho COMPLETO (compensa el
+        // padding lateral del contenedor con márgenes negativos)
+        (grafico.layoutParams as android.widget.LinearLayout.LayoutParams).let { lp ->
+            lp.height = (resources.displayMetrics.heightPixels * 0.18f).toInt()
+            val pad = (18 * resources.displayMetrics.density).toInt()
+            lp.leftMargin = -pad
+            lp.rightMargin = -pad
+            grafico.layoutParams = lp
+        }
         findViewById<TextView>(R.id.tvSub).text =
             "Reuniones → PDFs · v${BuildConfig.VERSION_NAME}"
 
@@ -347,11 +373,13 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         handler.post(refresco)
+        handler.post(muestreoGrafico)
     }
 
     override fun onPause() {
         super.onPause()
         handler.removeCallbacks(refresco)
+        handler.removeCallbacks(muestreoGrafico)
     }
 
     private fun iniciar() {
