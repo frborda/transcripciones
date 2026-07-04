@@ -1,7 +1,10 @@
 package com.fer.grabador
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.net.Uri
@@ -29,6 +32,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvTimer: TextView
     private lateinit var tvPartes: TextView
     private lateinit var dotEstado: View
+
+    // el Salir de la notificación también cierra esta pantalla
+    private val salirReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context?, i: Intent?) = finishAndRemoveTask()
+    }
 
     private val handler = Handler(Looper.getMainLooper())
     private val refresco = object : Runnable {
@@ -102,6 +110,20 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnCortar).setOnClickListener { servicio(RecordService.ACTION_CUT) }
         findViewById<Button>(R.id.btnFinalizar).setOnClickListener { confirmarFinalizar() }
         findViewById<ImageButton>(R.id.btnConfig).setOnClickListener { abrirConfig() }
+        findViewById<ImageButton>(R.id.btnSalir).setOnClickListener { salir() }
+
+        ContextCompat.registerReceiver(this, salirReceiver,
+            IntentFilter(RecordService.BC_SALIR), ContextCompat.RECEIVER_NOT_EXPORTED)
+
+        // notificación persistente desde que se abre la app (solo Salir la quita);
+        // en Android 13+ pide primero el permiso de notificaciones
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
+        }
+        mostrarNotificacion()
 
         // quedó una grabación sin terminar (la app murió): retomarla sola
         if (!RecordService.corriendo && Prefs.sesionActiva(this).isNotEmpty()) {
@@ -109,6 +131,26 @@ class MainActivity : AppCompatActivity() {
             iniciar()
         }
         if (intent?.getBooleanExtra("confirmar_fin", false) == true) confirmarFinalizar()
+    }
+
+    private fun mostrarNotificacion() {
+        ContextCompat.startForegroundService(
+            this, Intent(this, RecordService::class.java).setAction(RecordService.ACTION_SHOW))
+    }
+
+    /** Salir de la app: cierra la pantalla y quita la notificación (vía servicio). */
+    private fun salir() {
+        if (RecordService.corriendo) {
+            toast("Hay una grabación en curso: finalizala antes de salir")
+            return
+        }
+        startService(Intent(this, RecordService::class.java).setAction(RecordService.ACTION_EXIT))
+        finishAndRemoveTask()
+    }
+
+    override fun onDestroy() {
+        try { unregisterReceiver(salirReceiver) } catch (e: Exception) { }
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: android.content.Intent?) {
@@ -215,6 +257,8 @@ class MainActivity : AppCompatActivity() {
             iniciar()
         } else if (code == 1) {
             toast("Sin permiso de micrófono no puedo grabar")
+        } else if (code == 2) {
+            mostrarNotificacion()  // recién ahora la notificación puede verse
         }
     }
 

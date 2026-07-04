@@ -47,6 +47,9 @@ class RecordService : Service() {
         const val ACTION_START = "com.fer.grabador.START"
         const val ACTION_CUT = "com.fer.grabador.CUT"
         const val ACTION_FINISH = "com.fer.grabador.FINISH"
+        const val ACTION_SHOW = "com.fer.grabador.SHOW"    // notificación persistente (reposo)
+        const val ACTION_EXIT = "com.fer.grabador.EXIT"    // salir: cierra app y notificación
+        const val BC_SALIR = "com.fer.grabador.BC_SALIR"   // broadcast para cerrar la Activity
         const val CANAL = "grabacion"
         const val UMBRAL_SILENCIO = 1800   // amplitud (0..32767) por debajo = "silencio"
         const val MAX_ESPERA_MS = 30_000L  // si no hay pausa tras el intervalo, cortar igual
@@ -127,17 +130,57 @@ class RecordService : Service() {
                 reprogramarAuto()
             }
             ACTION_FINISH -> finalizar()
+            ACTION_SHOW -> if (!corriendo) mostrarIdle()
+            ACTION_EXIT -> salir()
             // intent null = el sistema reinició el servicio (START_STICKY) tras matarlo:
-            // si había una grabación en curso, retomarla; si no, apagarse
-            else -> if (!corriendo && Prefs.sesionActiva(this).isNotEmpty()) iniciar() else if (!corriendo) stopSelf()
+            // si había una grabación en curso, retomarla; si no, quedarse en reposo
+            // (la notificación persistente solo se va con Salir)
+            else -> if (!corriendo && Prefs.sesionActiva(this).isNotEmpty()) iniciar()
+                    else if (!corriendo) mostrarIdle()
         }
         return START_STICKY
+    }
+
+    /** Notificación persistente en reposo (sin grabar): acciones Iniciar / Salir.
+     *  Usa el tipo dataSync porque el tipo micrófono exige el permiso de grabar,
+     *  que puede no estar dado todavía la primera vez. */
+    private fun mostrarIdle() {
+        crearCanal()
+        if (estado == "detenido") estado = "listo para grabar"
+        val n = notif(estado)
+        if (Build.VERSION.SDK_INT >= 30) {
+            startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(1, n)
+        }
+    }
+
+    /** Salir: cierra la Activity (broadcast), saca la notificación y apaga el servicio.
+     *  Grabando o subiendo no se ofrece; si igual llega, no se sale (no perder nada). */
+    private fun salir() {
+        if (corriendo) {
+            estado = if (finalizando) "subiendo lo pendiente: esperá para salir"
+                     else "grabación en curso: finalizá antes de salir"
+            notificar(estado)
+            return
+        }
+        sendBroadcast(Intent(BC_SALIR).setPackage(packageName))
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     // ---------- ciclo de vida de la grabación ----------
 
     private fun iniciar() {
         if (corriendo) return
+        // desde la acción Iniciar de la notificación puede no haber permiso todavía
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                this, android.Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            estado = "falta permiso de micrófono: abrí la app"
+            mostrarIdle()
+            return
+        }
         corriendo = true
         finalizando = false
         crearCanal()
@@ -422,8 +465,8 @@ class RecordService : Service() {
         mediaSession = null
         vibrar(400)
         try { wakeLock?.release() } catch (e: Exception) { }
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        // la notificación persiste (con Iniciar/Salir): solo Salir la quita
+        mostrarIdle()
     }
 
     // ---------- timer automático y notificación ----------
@@ -449,27 +492,38 @@ class RecordService : Service() {
     private fun notif(texto: String): Notification {
         val piApp = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        // cortar directo desde la notificación (funciona con pantalla bloqueada)
-        val piCortar = PendingIntent.getService(
-            this, 1, Intent(this, RecordService::class.java).setAction(ACTION_CUT),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        // finalizar abre la app con el diálogo de confirmación (evita finales por error)
-        val piFin = PendingIntent.getActivity(
-            this, 2,
-            Intent(this, MainActivity::class.java)
-                .putExtra("confirmar_fin", true)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        return NotificationCompat.Builder(this, CANAL)
+        val b = NotificationCompat.Builder(this, CANAL)
             .setContentTitle("Grabador de reuniones")
             .setContentText(texto)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(piApp)
-            .addAction(0, "✂ Cortar y enviar", piCortar)
-            .addAction(0, "⏹ Finalizar", piFin)
-            .build()
+        if (corriendo) {
+            // grabando: Finalizar (abre la app con confirmación) + Cortar
+            val piFin = PendingIntent.getActivity(
+                this, 2,
+                Intent(this, MainActivity::class.java)
+                    .putExtra("confirmar_fin", true)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val piCortar = PendingIntent.getService(
+                this, 1, Intent(this, RecordService::class.java).setAction(ACTION_CUT),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            b.addAction(0, "⏹ Finalizar", piFin)
+            b.addAction(0, "✂ Cortar", piCortar)
+        } else {
+            // reposo (sin iniciar o ya finalizada): Iniciar + Salir
+            val piIniciar = PendingIntent.getService(
+                this, 3, Intent(this, RecordService::class.java).setAction(ACTION_START),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val piSalir = PendingIntent.getService(
+                this, 4, Intent(this, RecordService::class.java).setAction(ACTION_EXIT),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            b.addAction(0, "▶ Iniciar", piIniciar)
+            b.addAction(0, "✖ Salir", piSalir)
+        }
+        return b.build()
     }
 
     private fun notificar(t: String) {
