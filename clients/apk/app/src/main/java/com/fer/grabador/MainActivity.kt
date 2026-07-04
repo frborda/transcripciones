@@ -72,14 +72,14 @@ class MainActivity : AppCompatActivity() {
                             (if (RecordService.nsN) "+NS" else "") +
                             (if (Prefs.eco(this@MainActivity)) "+eco" else "") +
                             (if (eqOn) "+EQ" else "") +
-                            (if (RecordService.hablaN) "  🗣" else "  —") +
-                            "  ·  voz %.2f/%.2f  ·  mic %d dB · ×%.0f".format(
+                            (if (RecordService.hablaN) " 🗣" else " —") +
+                            " · voz %.2f/%.2f · mic %d dB · ×%.0f".format(
                                 RecordService.probN, Ajustes.umbralVad,
                                 RecordService.dbCrudoN, RecordService.ganN)
                 } else {
                     "parte ${fmtSeg((ahora - RecordService.tParte) / 1000)}" +
-                            "  ·  total ${fmtSeg((ahora - RecordService.tTotal) / 1000)}" +
-                            (if (RecordService.vadN) "  ·  VAD" else "  ·  energía") +
+                            " · total ${fmtSeg((ahora - RecordService.tTotal) / 1000)}" +
+                            (if (RecordService.vadN) " · VAD" else " · energía") +
                             (if (RecordService.hablaN) " 🗣" else "")
                 }
                 tvTimer.visibility = View.VISIBLE

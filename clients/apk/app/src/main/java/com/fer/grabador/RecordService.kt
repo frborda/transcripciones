@@ -190,7 +190,8 @@ class RecordService : Service(), CapturaAudio.Listener {
     // comparar contra un puntaje viejo sesgaría la búsqueda.
 
     private data class Curva(val g: Float, val m: Float, val p: Float) {
-        override fun toString() = "graves %+.1f · medios %+.1f · presencia %+.1f".format(g, m, p)
+        // corto: va en el estado de la tarjeta (el diálogo de EQ muestra el detalle)
+        override fun toString() = "g%+.1f m%+.1f p%+.1f".format(g, m, p)
     }
 
     private val eqPresets = listOf(
@@ -294,7 +295,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         eqAutoEstado = ""
         aplicarCandidata(eqMejor)
         Prefs.setEq(this, eqMejor.g, eqMejor.m, eqMejor.p)
-        estado = if (eqMejorScore >= 0) "EQ fija: $eqMejor (claridad $eqMejorScore)"
+        estado = if (eqMejorScore >= 0) "EQ fija: $eqMejor · claridad $eqMejorScore"
                  else "EQ sin cambios: no hubo habla para medir"
     }
 
