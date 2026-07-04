@@ -50,6 +50,7 @@ class MainActivity : AppCompatActivity() {
                 val ahora = System.currentTimeMillis()
                 tvTimer.text = if (RecordService.probando) {
                     (if (RecordService.vadN) "VAD" else "energía") +
+                            (if (RecordService.nsN) "+NS" else "") +
                             (if (RecordService.hablaN) "  🗣 hablando" else "  (silencio)") +
                             "  ·  mic %d dB · ×%.0f".format(
                                 RecordService.dbCrudoN, RecordService.ganN)
@@ -260,12 +261,14 @@ class MainActivity : AppCompatActivity() {
         val etIntervalo = v.findViewById<EditText>(R.id.etIntervalo)
         val swAuto = v.findViewById<CompoundButton>(R.id.swAuto)
         val swCruda = v.findViewById<CompoundButton>(R.id.swCruda)
+        val swNs = v.findViewById<CompoundButton>(R.id.swNs)
 
         etToken.setText(Prefs.token(this))
         etChat.setText(Prefs.chatId(this))
         etIntervalo.setText(Prefs.fmtHms(Prefs.intervaloSeg(this)))
         swAuto.isChecked = Prefs.auto(this)
         swCruda.isChecked = Prefs.cruda(this)
+        swNs.isChecked = Prefs.ns(this)
 
         v.findViewById<View>(R.id.btnDetectar).setOnClickListener {
             val token = etToken.text.toString().trim()
@@ -298,7 +301,8 @@ class MainActivity : AppCompatActivity() {
                     etChat.text.toString().trim(),
                     Prefs.parseHms(etIntervalo.text.toString()),
                     swAuto.isChecked,
-                    swCruda.isChecked)
+                    swCruda.isChecked,
+                    swNs.isChecked)
                 toast("Configuración guardada")
             }
             .setNegativeButton("Cancelar", null)

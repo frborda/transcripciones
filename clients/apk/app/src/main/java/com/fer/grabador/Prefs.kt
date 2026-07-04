@@ -11,15 +11,18 @@ object Prefs {
     fun auto(c: Context): Boolean = sp(c).getBoolean("auto", true)
     /** Fuente UNPROCESSED (audio 100% crudo, sin AGC/supresión del fabricante). */
     fun cruda(c: Context): Boolean = sp(c).getBoolean("cruda", false)
+    /** Supresión de ruido del DSP del teléfono (NoiseSuppressor). */
+    fun ns(c: Context): Boolean = sp(c).getBoolean("ns", true)
 
     fun guardar(c: Context, token: String, chatId: String, intervaloSeg: Int, auto: Boolean,
-                cruda: Boolean = false) {
+                cruda: Boolean = false, ns: Boolean = true) {
         sp(c).edit()
             .putString("token", token)
             .putString("chat_id", chatId)
             .putInt("intervalo_seg", if (intervaloSeg < 5) 5 else intervaloSeg)
             .putBoolean("auto", auto)
             .putBoolean("cruda", cruda)
+            .putBoolean("ns", ns)
             .apply()
     }
 

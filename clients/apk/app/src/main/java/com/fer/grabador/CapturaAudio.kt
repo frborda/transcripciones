@@ -30,6 +30,7 @@ import kotlin.math.sqrt
 class CapturaAudio(
     private val fuente: Int,
     private val vad: VadSilero?,          // null → detector de energía adaptativo
+    private val supresionRuido: Boolean,  // NoiseSuppressor del DSP del teléfono
     private val listener: Listener,
 ) {
     interface Listener {
@@ -79,6 +80,10 @@ class CapturaAudio(
     @Volatile var usandoVad = false
         private set
 
+    /** true si la supresión de ruido del DSP quedó activa en esta sesión. */
+    @Volatile var nsActivo = false
+        private set
+
     // telemetría para el modo prueba: nivel crudo del mic y ganancia aplicada
     @Volatile var dbCrudo = -90
         private set
@@ -122,6 +127,8 @@ class CapturaAudio(
     @SuppressLint("MissingPermission")  // el servicio valida RECORD_AUDIO antes
     private fun loop(primerArchivo: File) {
         var audio: AudioRecord? = null
+        var ns: android.media.audiofx.NoiseSuppressor? = null
+        var aec: android.media.audiofx.AcousticEchoCanceler? = null
         var codec: MediaCodec? = null
         var muxer: MediaMuxer? = null
         var pista = -1
@@ -197,6 +204,23 @@ class CapturaAudio(
                                 AudioFormat.ENCODING_PCM_16BIT, max(minBuf, SR))  // buffer ~1 s
             if (audio.state != AudioRecord.STATE_INITIALIZED)
                 throw IllegalStateException("AudioRecord no inicializó (¿mic ocupado?)")
+
+            // SUPRESIÓN DE RUIDO por hardware (DSP del teléfono, tipo Krisp nativo):
+            // limpia el ruido ambiente ANTES del encoder y del VAD. Si el equipo no
+            // la trae, sigue sin ella (nsActivo lo refleja).
+            if (supresionRuido) {
+                try {
+                    if (android.media.audiofx.NoiseSuppressor.isAvailable()) {
+                        ns = android.media.audiofx.NoiseSuppressor.create(audio.audioSessionId)
+                            ?.apply { enabled = true }
+                        nsActivo = ns?.enabled == true
+                    }
+                    if (android.media.audiofx.AcousticEchoCanceler.isAvailable()) {
+                        aec = android.media.audiofx.AcousticEchoCanceler.create(audio.audioSessionId)
+                            ?.apply { enabled = true }
+                    }
+                } catch (_: Exception) { /* sin efectos: se graba igual */ }
+            }
 
             val fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, SR, 1).apply {
                 setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
@@ -293,10 +317,11 @@ class CapturaAudio(
                         i += 3; j++
                     }
                     // normalizar la ENTRADA del VAD (independiente de la grabación):
-                    // la voz LEJANA/baja llega a Silero a nivel sano y la detecta;
-                    // el ruido amplificado lo rechaza igual (para eso es neuronal)
+                    // la voz LEJANA/baja llega a Silero a nivel sano y la detecta.
+                    // Tope ×16: con ×40 el ruido ambiente subía tanto que a veces
+                    // pasaba por voz y los chunks no cortaban nunca.
                     if (maxAbs > 1e-4f && maxAbs < 0.5f) {
-                        val escala = minOf(0.5f / maxAbs, 40f)
+                        val escala = minOf(0.5f / maxAbs, 16f)
                         for (k in 0 until VadSilero.CHUNK) chunkVad[k] *= escala
                     }
                     esVoz = try {
@@ -347,6 +372,8 @@ class CapturaAudio(
             try { muxer?.release() } catch (_: Exception) {}
             listener.onError(e.message ?: e.javaClass.simpleName)
         } finally {
+            try { ns?.release() } catch (_: Exception) {}
+            try { aec?.release() } catch (_: Exception) {}
             try { audio?.stop() } catch (_: Exception) {}
             try { audio?.release() } catch (_: Exception) {}
             try { codec?.stop() } catch (_: Exception) {}

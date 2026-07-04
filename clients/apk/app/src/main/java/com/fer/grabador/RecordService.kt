@@ -78,6 +78,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         @Volatile var hablaN = false       // el VAD detecta habla ahora
         @Volatile var vadN = false         // true = VAD neuronal activo (no energía)
         @Volatile var probando = false     // modo prueba de micrófono (no graba nada)
+        @Volatile var nsN = false          // supresión de ruido del DSP activa
         @Volatile var dbCrudoN = -90       // nivel crudo del mic (dBFS), para la prueba
         @Volatile var ganN = 1.0           // ganancia digital aplicada, para la prueba
     }
@@ -193,7 +194,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         val vad = try { VadSilero(this) } catch (e: Exception) { null }
         estado = if (vad != null) "🎙 prueba: hablá y mirá la barra (VAD activo)"
                  else "🎙 prueba: hablá y mirá la barra (VAD no cargó: energía)"
-        captura = CapturaAudio(fuenteElegida(), vad, this)
+        captura = CapturaAudio(fuenteElegida(), vad, Prefs.ns(this), this)
             .also { it.iniciar(File(cacheDir, "test.m4a")) }
         handler.postDelayed(testTimeout, 120_000)  // apagado solo a los 2 min
     }
@@ -312,7 +313,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         cortePedido = false
         avisoDado = false
         bajosMs = 0; tapadoMs = 0; satMs = 0
-        captura = CapturaAudio(fuenteElegida(), vad, this).also { it.iniciar(f) }
+        captura = CapturaAudio(fuenteElegida(), vad, Prefs.ns(this), this).also { it.iniciar(f) }
         parteN = parte
         tParte = System.currentTimeMillis()
         grabandoArchivo = f.name
@@ -365,6 +366,7 @@ class RecordService : Service(), CapturaAudio.Listener {
         hablaN = esVoz
         captura?.let { c ->
             vadN = c.usandoVad
+            nsN = c.nsActivo
             dbCrudoN = c.dbCrudo
             ganN = c.gananciaActual
         }
