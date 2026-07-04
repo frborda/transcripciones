@@ -36,6 +36,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnTest: Button
     private lateinit var filaSupresion: View
     private lateinit var ledVoz: View
+    private lateinit var tvCalidad: TextView
     private lateinit var grafico: GraficoVoz
 
     // muestreo del gráfico a 10 Hz (independiente del refresco de textos)
@@ -83,6 +84,16 @@ class MainActivity : AppCompatActivity() {
                 ledVoz.background.mutate().setTint(
                     ContextCompat.getColor(this@MainActivity,
                         if (RecordService.hablaN) R.color.dot_done else R.color.dot_idle))
+                // claridad de la voz (SNR + confianza del VAD, sobre lo hablado):
+                // sirve para ubicar el celu ANTES de la reunión con el modo prueba
+                val cal = RecordService.calidadN
+                tvCalidad.text = if (cal < 0) "voz --" else "voz $cal"
+                tvCalidad.setTextColor(ContextCompat.getColor(this@MainActivity, when {
+                    cal < 0 -> R.color.dot_idle
+                    cal >= 65 -> R.color.cal_buena
+                    cal >= 40 -> R.color.cal_media
+                    else -> R.color.cal_mala
+                }))
             } else {
                 tvTimer.visibility = View.GONE
                 pbNivel.visibility = View.GONE
@@ -155,6 +166,7 @@ class MainActivity : AppCompatActivity() {
         btnTest = findViewById(R.id.btnTest)
         filaSupresion = findViewById(R.id.filaSupresion)
         ledVoz = findViewById(R.id.ledVoz)
+        tvCalidad = findViewById(R.id.tvCalidad)
         grafico = findViewById(R.id.grafico)
         // alto ~18 % de la pantalla (tope 20 %) y ancho COMPLETO (compensa el
         // padding lateral del contenedor con márgenes negativos)

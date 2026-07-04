@@ -17,4 +17,9 @@
     <color name="dot_up">#3B82F6</color>
     <color name="dot_done">#22C55E</color>
     <color name="dot_err">#F59E0B</color>
+
+    <!-- Claridad de voz (verde / ámbar / rojo) -->
+    <color name="cal_buena">#22C55E</color>
+    <color name="cal_media">#F59E0B</color>
+    <color name="cal_mala">#EF4444</color>
 </resources>

@@ -158,6 +158,16 @@
                         app:trackHeight="4dp"
                         app:thumbRadius="7dp" />
 
+                    <TextView
+                        android:id="@+id/tvCalidad"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:fontFamily="monospace"
+                        android:text=""
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+
                     <View
                         android:id="@+id/ledVoz"
                         android:layout_width="16dp"

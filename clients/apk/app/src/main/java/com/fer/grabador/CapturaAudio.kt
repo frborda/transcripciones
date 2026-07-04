@@ -52,6 +52,7 @@ class CapturaAudio(
         const val SR = 48000
         const val FRAME = 1536          // 32 ms a 48 kHz (→ 512 a 16 kHz para el VAD)
         const val BITRATE = 128000
+        const val CAL_VENTANA = 250     // ~8 s de HABLA para el índice de claridad
 
         // biquad pasa-altos RBJ fs=48k f0=80Hz Q=0.707, normalizado por a0
         private val HPF_B0: Double
@@ -128,6 +129,32 @@ class CapturaAudio(
     // emitirlo, así que la atenuación se aplica en rampa y las sílabas fuertes
     // no salen recortadas (el clipping es lo único irreparable río abajo).
     private var aten = 1.0
+
+    /** CLARIDAD de la voz captada, 0..100 (-1 hasta juntar ~2 s de habla).
+     *  Combina el SNR (cuánto sobresale la voz del ruido de sala) con la
+     *  confianza de Silero (cae con eco, distancia y voz entredicha) menos un
+     *  castigo por saturación: un proxy de "qué tan transcribible" llega la voz.
+     *  Se calcula SOLO sobre frames con habla (el silencio no opina). */
+    @Volatile var calidadVoz = -1
+        private set
+    private val calSnr = FloatArray(CAL_VENTANA)
+    private val calProb = FloatArray(CAL_VENTANA)
+    private val calSat = BooleanArray(CAL_VENTANA)
+    private var calIdx = 0
+    private var calLlenos = 0
+
+    private fun calcularCalidad(): Int {
+        var sSnr = 0f; var sProb = 0f; var nSat = 0
+        for (i in 0 until calLlenos) {
+            sSnr += calSnr[i]; sProb += calProb[i]; if (calSat[i]) nSat++
+        }
+        val snrScore = ((sSnr / calLlenos - 5f) * (100f / 20f)).coerceIn(0f, 100f)   // 5 dB→0, 25 dB→100
+        val probScore = ((sProb / calLlenos - 0.4f) * (100f / 0.55f)).coerceIn(0f, 100f) // 0.40→0, 0.95→100
+        val castigo = 30f * nSat / calLlenos
+        val q = if (usandoVad) 0.45f * snrScore + 0.55f * probScore - castigo
+                else snrScore - castigo  // sin VAD no hay confianza que medir
+        return q.coerceIn(0f, 100f).toInt()
+    }
 
     fun iniciar(primerArchivo: File) {
         if (corriendo) return
@@ -288,6 +315,7 @@ class CapturaAudio(
             var vadRoto = vad == null
             usandoVad = !vadRoto
             var framesDesdeNs = 0
+            var framesDesdeCal = 0
 
             while (!pedidoParar) {
                 // el slider en su mínimo también APAGA el NS del DSP en vivo (el NS
@@ -430,6 +458,19 @@ class CapturaAudio(
                 if (esVoz) hablaMsParte += 32
                 sumaNivelParte += nivel
                 listener.onFrame(nivel, esVoz, silencioso, saturado)
+
+                // claridad: acumular SOLO los frames con habla; publicar ~1 vez/s
+                if (esVoz) {
+                    calSnr[calIdx] = snrDb.toFloat()
+                    calProb[calIdx] = probVoz
+                    calSat[calIdx] = saturado
+                    calIdx = (calIdx + 1) % CAL_VENTANA
+                    if (calLlenos < CAL_VENTANA) calLlenos++
+                }
+                if (++framesDesdeCal >= 31) {
+                    framesDesdeCal = 0
+                    if (calLlenos >= 60) calidadVoz = calcularCalidad()  // ≥~2 s de habla
+                }
 
                 // encolar el PCM al encoder
                 val idx = codec.dequeueInputBuffer(10_000L)
