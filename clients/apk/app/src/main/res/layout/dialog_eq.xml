@@ -125,7 +125,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
             android:lineSpacingExtra="2dp"
-            android:text="La automática prueba curvas mientras hablás (~1–2 min de habla continua): primero 7 curvas gruesas, después ajustes de ±3 dB y ±1,5 dB alrededor de la ganadora, midiendo la claridad de cada una. Al terminar la mejor queda FIJA hasta que la vuelvas a lanzar. Ideal: modo Probar con el celu en su posición real, hablando desde donde va a estar la gente."
+            android:text="La automática prueba curvas mientras hablás (~1–2 min de habla continua, pareja): tu curva actual + 7 típicas, ajustes de ±3 dB alrededor de la ganadora, y una confirmación final contra plano — si no le gana claramente, queda plano. Mide la confianza del detector neuronal sobre tu voz. Al terminar la mejor queda FIJA hasta que la vuelvas a lanzar. Ideal: modo Probar con el celu en su posición real, hablando desde donde va a estar la gente."
             android:textColor="?attr/colorOnSurfaceVariant"
             android:textSize="12sp" />
     </LinearLayout>

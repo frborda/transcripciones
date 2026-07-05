@@ -208,6 +208,18 @@ class CapturaAudio(
     private var calIdx = 0
     private var calLlenos = 0
 
+    /** Confianza media de Silero sobre el habla de la ventana (0..100, -1 sin
+     *  datos). A diferencia de calidadVoz NO depende del piso de ruido
+     *  adaptativo: el piso tarda en re-aprenderse tras un cambio de curva de EQ
+     *  y le regala SNR a las curvas que amplifican, así que para COMPARAR
+     *  curvas la métrica justa es esta (la entrada del VAD va normalizada). */
+    @Volatile var confianzaVoz = -1
+        private set
+
+    /** Frames de HABLA acumulados en la ventana (para saber cuánto se midió). */
+    @Volatile var muestrasVozCal = 0
+        private set
+
     /** Vacía la ventana de claridad (el modo auto-EQ mide cada curva desde cero).
      *  Se pide con un flag y lo aplica el hilo de captura al borde del frame. */
     fun reiniciarCalidad() { pedidoResetCal = true }
@@ -459,7 +471,7 @@ class CapturaAudio(
                 if (pedidoResetCal) {
                     pedidoResetCal = false
                     calIdx = 0; calLlenos = 0
-                    calidadVoz = -1
+                    calidadVoz = -1; confianzaVoz = -1; muestrasVozCal = 0
                 }
 
                 // métricas de la señal CRUDA: piso de ruido, silencio y candidato a voz
@@ -581,7 +593,13 @@ class CapturaAudio(
                 }
                 if (++framesDesdeCal >= 31) {
                     framesDesdeCal = 0
-                    if (calLlenos >= 60) calidadVoz = calcularCalidad()  // ≥~2 s de habla
+                    muestrasVozCal = calLlenos
+                    if (calLlenos >= 60) {  // ≥~2 s de habla
+                        calidadVoz = calcularCalidad()
+                        var sp = 0f
+                        for (k in 0 until calLlenos) sp += calProb[k]
+                        confianzaVoz = (100f * sp / calLlenos).toInt()
+                    }
                 }
 
                 // encolar el PCM al encoder

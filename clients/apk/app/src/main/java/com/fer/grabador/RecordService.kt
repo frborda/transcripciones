@@ -67,6 +67,11 @@ class RecordService : Service(), CapturaAudio.Listener {
         const val TOPE_PARTE_MS = 45 * 60 * 1000L  // tope duro por parte (evita el 413 de Telegram)
         const val HABLA_MIN_MS = 1500L     // una parte con menos habla que esto NO se sube
 
+        // auto-EQ: histéresis y habla mínima por curva (frames de 32 ms de HABLA)
+        const val MARGEN_EQ = 3            // puntos para destronar al líder
+        const val HABLA_CURVA = 90         // por curva (~3 s de habla real)
+        const val HABLA_CONFIRMA = 150     // en la confirmación final (~5 s)
+
         @Volatile var corriendo = false
         @Volatile var estado = "detenido"
 
@@ -181,13 +186,22 @@ class RecordService : Service(), CapturaAudio.Listener {
 
     // ---------- ecualización automática: prueba curvas y fija la mejor ----------
     //
-    // FASE 1 recorre 7 curvas típicas (búsqueda gruesa); FASE 2 refina la
-    // ganadora banda por banda de a ±3 dB; FASE 3 de a ±1,5 dB. Cada candidata
-    // se evalúa con el índice de claridad sobre ~2-3 s de HABLA real (la
-    // ventana se vacía al cambiar de curva). Al terminar, la ganadora queda
-    // FIJA y persistida hasta que se vuelva a lanzar. La ganadora de cada fase
-    // se RE-mide al abrir la siguiente: lo que se habló cambia entre curvas y
-    // comparar contra un puntaje viejo sesgaría la búsqueda.
+    // FASE 1 recorre la curva ACTUAL + 7 presets (búsqueda gruesa); FASE 2
+    // refina la ganadora banda por banda de a ±3 dB; FASE 3 es una
+    // CONFIRMACIÓN contra plano con medición larga: si la ganadora no le gana
+    // claramente a plano en la revancha, queda plano (nunca se fija una curva
+    // que no demuestre valor).
+    //
+    // La métrica es la CONFIANZA de Silero sobre el habla (confianzaVoz), no el
+    // índice de claridad: la parte SNR de la claridad usa el piso de ruido
+    // adaptativo, que tarda en re-aprenderse tras cada cambio de curva y le
+    // regala puntaje a las curvas que amplifican. La confianza es justa (la
+    // entrada del VAD va normalizada y no depende del piso).
+    //
+    // Contra el ruido de medición (cada curva se mide sobre habla DISTINTA):
+    // margen de +3 para destronar al líder, ≥90 frames de habla por curva
+    // (150 en la confirmación) y la ganadora de cada fase se RE-mide al abrir
+    // la siguiente como línea de base fresca.
 
     private data class Curva(val g: Float, val m: Float, val p: Float) {
         // corto: va en el estado de la tarjeta (el diálogo de EQ muestra el detalle)
@@ -228,10 +242,13 @@ class RecordService : Service(), CapturaAudio.Listener {
             handler.postDelayed(testTimeout, 300_000)
         }
         eqInicioAuto = SystemClock.elapsedRealtime()
-        eqMejor = Curva(Ajustes.eqGraves, Ajustes.eqMedios, Ajustes.eqPresencia)
+        // la curva ACTUAL compite: si lo que había era mejor que todos los
+        // presets, el auto no la empeora
+        val actual = Curva(Ajustes.eqGraves, Ajustes.eqMedios, Ajustes.eqPresencia)
+        eqMejor = actual
         eqMejorScore = -1
         eqFase = 1
-        eqCandidatas = eqPresets
+        eqCandidatas = (listOf(actual) + eqPresets).distinct()
         eqIdx = 0
         aplicarCandidata(eqCandidatas[0])
         handler.removeCallbacks(eqTick)
@@ -248,17 +265,28 @@ class RecordService : Service(), CapturaAudio.Listener {
 
     private fun pasoEqAuto() {
         if (eqFase <= 0) return
+        val c = captura
         val ahora = SystemClock.elapsedRealtime()
         // la captura se cerró (fin de prueba/grabación) o pasaron 6 min: cerrar
-        if (captura == null || ahora - eqInicioAuto > 6 * 60_000L) {
+        if (c == null || ahora - eqInicioAuto > 6 * 60_000L) {
             terminarEqAuto(); return
         }
-        eqAutoEstado = "EQ auto · fase $eqFase/3 · curva ${eqIdx + 1}/${eqCandidatas.size} · hablá normal"
-        // cada curva necesita ~2 s de habla acumulada (calidad != -1) y un
-        // mínimo de 3 s corriendo (que el habla sea DE esta curva)
-        val score = calidadN
-        if (score < 0 || ahora - eqCandidataDesde < 3000) return
-        if (score > eqMejorScore) {
+        if (!c.usandoVad) {  // sin Silero no hay métrica de confianza que valga
+            handler.removeCallbacks(eqTick)
+            eqFase = 0
+            eqAutoEstado = ""
+            estado = "EQ auto cancelada: el VAD neuronal no está activo"
+            return
+        }
+        val nec = if (eqFase == 3) HABLA_CONFIRMA else HABLA_CURVA
+        val muestras = c.muestrasVozCal
+        eqAutoEstado = "EQ auto F$eqFase/3 · curva ${eqIdx + 1}/${eqCandidatas.size}" +
+                " · habla ${muestras.coerceAtMost(nec)}/$nec"
+        val score = c.confianzaVoz
+        if (score < 0 || muestras < nec || ahora - eqCandidataDesde < 3500) return
+        // candidata medida: destronar solo con margen (el habla cambia entre
+        // curvas; sin histéresis la búsqueda persigue ruido de medición)
+        if (eqMejorScore < 0 || score > eqMejorScore + MARGEN_EQ) {
             eqMejorScore = score
             eqMejor = eqCandidatas[eqIdx]
         }
@@ -267,13 +295,15 @@ class RecordService : Service(), CapturaAudio.Listener {
             aplicarCandidata(eqCandidatas[eqIdx])
             return
         }
-        when (eqFase) {  // fase terminada: refinar alrededor de la ganadora
+        when (eqFase) {
             1 -> { eqFase = 2; eqCandidatas = vecinos(eqMejor, 3f) }
-            2 -> { eqFase = 3; eqCandidatas = vecinos(eqMejor, 1.5f) }
+            // confirmación: plano primero (línea de base) y la ganadora debe
+            // ganarle por margen en una medición LARGA; si no, queda plano
+            2 -> { eqFase = 3; eqCandidatas = listOf(Curva(0f, 0f, 0f), eqMejor).distinct() }
             else -> { terminarEqAuto(); return }
         }
         eqIdx = 0
-        eqMejorScore = -1  // re-medir la ganadora (candidata 0) como línea de base
+        eqMejorScore = -1  // re-medir la línea de base con habla fresca
         aplicarCandidata(eqCandidatas[0])
     }
 
